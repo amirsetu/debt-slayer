@@ -11,6 +11,7 @@
 <meta name="apple-mobile-web-app-title" content="Debt Slayer">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="manifest" href="manifest.webmanifest">
+<script>try{var t=localStorage.getItem('debtslayer.theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
 <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -78,6 +79,7 @@ a:hover{text-decoration:underline}
 .wrap{max-width:1120px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
 .top{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:var(--bg);border-bottom:2px solid var(--edge)}
 .top .wrap{display:flex;align-items:center;gap:12px;padding-block:10px}
+@media (max-width:420px){.top .wrap{gap:8px}}
 .brand{display:flex;align-items:center;gap:9px;font:700 21px/1 var(--f-hud);letter-spacing:.01em;white-space:nowrap}
 .brand .px{width:24px;height:24px;color:var(--gold)}
 .spacer{flex:1}
@@ -413,6 +415,7 @@ button,a,label{-webkit-tap-highlight-color:transparent}
       <span class="spacer"></span>
       <nav class="tabs" id="tabs" aria-label="Sections"></nav>
       <span id="lv"></span>
+      <button class="iconbtn" data-act="theme" id="themebtn"></button>
       <button class="iconbtn" data-act="settings" aria-label="Settings" id="gear"></button>
     </div>
   </header>
@@ -464,6 +467,8 @@ const ICONS = {
   trophy:['########','#.####.#','.######.','..####..','...##...','...##...','..####..','.######.'],
   lock:  ['..####..','.#....#.','.#....#.','########','###..###','###..###','########','........'],
   star:  ['...##...','...##...','########','.######.','..####..','..####..','.##..##.','.#....#.'],
+  sun:   ['...##...','.#....#.','..####..','#.####.#','#.####.#','..####..','.#....#.','...##...'],
+  moon:  ['...###..','..###...','.###....','.###....','.###....','.###....','..###...','...###..'],
   hammer:['.######.','.######.','.##++##.','...##...','...##...','...##...','...##...','..####..'],
   helm:  ['..####..','.#++++#.','#++++++#','########','#.#..#.#','########','.#++++#.','.######.'],
   gem:   ['........','.######.','##+##+##','#++++++#','.#++++#.','..#++#..','...##...','........'],
@@ -882,6 +887,25 @@ function progress() {
 
 /* ---------- rendering ---------- */
 function scheduleRender() { if (renderQueued) return; renderQueued = true; setTimeout(() => { renderQueued = false; render(); }, 0); }
+/* ---------- light / dark: a choice per device, kept in this browser ---------- */
+const THEME_KEY = 'debtslayer.theme';
+const darkMQ = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
+function curTheme() { try { const t = localStorage.getItem(THEME_KEY); return t === 'light' || t === 'dark' ? t : 'auto'; } catch (e) { return 'auto'; } }
+const isDark = () => { const t = curTheme(); return t === 'dark' || (t === 'auto' && !!(darkMQ && darkMQ.matches)); };
+function applyTheme() {
+  const t = curTheme(), root = document.documentElement;
+  if (t === 'auto') delete root.dataset.theme; else root.dataset.theme = t;
+  document.querySelectorAll('meta[name="theme-color"]').forEach(m => {
+    if (!m.dataset.orig) m.dataset.orig = m.content;
+    m.content = t === 'light' ? '#E8EAF4' : t === 'dark' ? '#0E1024' : m.dataset.orig;
+  });
+  const b = $('#themebtn');
+  if (b) { b.innerHTML = px(isDark() ? 'sun' : 'moon'); b.setAttribute('aria-label', isDark() ? 'Switch to light mode' : 'Switch to dark mode'); }
+}
+function setTheme(t) { try { if (t === 'auto') localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, t); } catch (e) {} applyTheme(); }
+applyTheme();
+if (darkMQ && darkMQ.addEventListener) darkMQ.addEventListener('change', applyTheme);
+
 function render() {
   const main = $('#main');
   const navBtn = ([id, label, ico]) => `<button data-act="nav" data-view="${id}" ${view === id ? 'aria-current="page"' : ''}>${px(ico)}<span>${label}</span></button>`;
@@ -1675,6 +1699,7 @@ function openReveal(id) {
 function openSettings() {
   const backup = JSON.stringify(exportAll(), null, 1);
   openSheet(sheetHead('Settings') + `<form class="form" data-form="settings">
+    <fieldset class="fld"><legend>Look</legend>${chips('theme', ['auto', 'light', 'dark'], curTheme(), ['Match my phone', 'Light', 'Dark'])}<small>Changes right away. Saved on this device.</small></fieldset>
     <div class="two"><label class="fld" for="s-fx"><span>1 USD in EUR</span><input type="text" id="s-fx" name="fx" inputmode="decimal" value="${esc(S.fx)}" ${S.fxAuto !== false ? 'readonly' : ''}></label>
     <label class="fld" for="s-fee"><span>Wise fee %</span><input type="text" id="s-fee" name="fee" inputmode="decimal" value="${esc(S.fee)}"></label></div>
     <label class="check"><input type="checkbox" name="fxauto" id="s-fxauto" ${S.fxAuto !== false ? 'checked' : ''}> Update the rate every day (European Central Bank)</label>
@@ -1751,6 +1776,7 @@ const ACTIONS = {
     : save(store.update('fin/days', {d: {[T]: {a: r2(M.allow), t: r2(M.target), ns: true}}}), 'No-spend day locked in. Hold it and earn <b>+30 XP</b> tomorrow.'),
   occ: b => openOcc(b.dataset.key, b.dataset.back),
   level: () => openLevel(),
+  theme: () => setTheme(isDark() ? 'light' : 'dark'),
   avatar: b => save(store.update('fin/settings', {avatar: b.dataset.av}), 'Avatar equipped').then(() => openLevel(b.dataset.av)),
   strike: b => openStrike(b.dataset.id, {group: b.dataset.group, amt: b.dataset.amt}),
   strikefill: b => { const i = $('#st-amt'); if (i) { i.value = b.dataset.v; strikePreview(); } },
@@ -1945,6 +1971,7 @@ document.addEventListener('change', e => {
   }
   if (e.target.name === 'freq') { const w = $('#i-every-wrap'); if (w) w.hidden = e.target.value !== 'days'; }
   if (e.target.id === 'i-debt' || (e.target.name === 'kind' && $('#i-owed-wrap'))) { const f = e.target.form; $('#i-owed-wrap').hidden = !(f.debt.checked && f.querySelector('[name=kind]:checked').value !== 'income'); }
+  if (e.target.name === 'theme') setTheme(e.target.value);
   if (e.target.id === 's-fxauto') { const i = $('#s-fx'); if (i) i.readOnly = e.target.checked; }
   if (e.target.name === 'simmode') { simMode = e.target.value; simExtra = simMode === 'once' ? 1000 : 100; const bx = $('#simbox'); if (bx) bx.outerHTML = simBlock(); }
   if (e.target.id === 'sim-target') { simTarget = e.target.value; $('#sim-out').innerHTML = simOut(); }
