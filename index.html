@@ -79,7 +79,15 @@ a:hover{text-decoration:underline}
 .wrap{max-width:1120px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
 .top{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:var(--bg);border-bottom:2px solid var(--edge)}
 .top .wrap{display:flex;align-items:center;gap:12px;padding-block:10px}
-@media (max-width:420px){.top .wrap{gap:8px}}
+@media (max-width:420px){.top .wrap{gap:7px}.top .iconbtn{width:35px;height:35px}}
+@media (max-width:400px){.top .brand{font-size:16px;gap:6px}.top .wrap{gap:6px}}
+@media (max-width:369px){.top .brand .bt{display:none}}
+.mlist{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+.mlist li{display:grid;gap:8px;padding:12px;border:2px solid var(--rule);border-radius:10px}
+.mlist small{display:block;color:var(--muted);font-size:12px;margin-top:2px}
+.sres h3{font:600 13px/1.2 var(--f-ui);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:14px 0 6px}
+.sres .group{margin:0}
+.addprev{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:8px 0 10px;border-bottom:1.5px solid var(--rule);font-size:13px}
 .brand{display:flex;align-items:center;gap:9px;font:700 21px/1 var(--f-hud);letter-spacing:.01em;white-space:nowrap}
 .brand .px{width:24px;height:24px;color:var(--gold)}
 .spacer{flex:1}
@@ -356,7 +364,7 @@ input[type=range]{width:100%;accent-color:var(--gold)}
 .fld>span,.fld>legend{font:500 11px/1.2 var(--f-ui);letter-spacing:.09em;text-transform:uppercase;color:var(--muted);padding:0;margin-bottom:6px}
 .fld>span{margin-bottom:0}
 .fld small{color:var(--muted);font-size:12px}
-.form input[type=text],.form input[type=date],.form input[type=number],.form select,#sim-target,.form textarea{font:500 16px/1.2 var(--f-ui);color:var(--ink);background:var(--panel-2);border:2px solid var(--rule);border-radius:9px;padding:11px 12px;width:100%;min-width:0}
+.form input[type=text],.form input[type=search],.form input[type=date],.form input[type=number],.form select,#sim-target,.form textarea{font:500 16px/1.2 var(--f-ui);color:var(--ink);background:var(--panel-2);border:2px solid var(--rule);border-radius:9px;padding:11px 12px;width:100%;min-width:0}
 .form input:focus,.form select:focus,#sim-target:focus,.form textarea:focus{outline:none;border-color:var(--edge)}
 .form textarea{font:400 12px/1.4 ui-monospace,Menlo,monospace;min-height:120px;resize:vertical}
 .form input.amt{font:700 30px/1 var(--f-num);padding:12px;letter-spacing:-.01em}
@@ -411,10 +419,11 @@ button,a,label{-webkit-tap-highlight-color:transparent}
 <div id="app">
   <header class="top">
     <div class="wrap">
-      <div class="brand"><span id="brand-ico"></span>Debt Slayer</div>
+      <div class="brand"><span id="brand-ico"></span><span class="bt">Debt Slayer</span></div>
       <span class="spacer"></span>
       <nav class="tabs" id="tabs" aria-label="Sections"></nav>
       <span id="lv"></span>
+      <button class="iconbtn" data-act="search" aria-label="Search" id="searchbtn"></button>
       <button class="iconbtn" data-act="theme" id="themebtn"></button>
       <button class="iconbtn" data-act="settings" aria-label="Settings" id="gear"></button>
     </div>
@@ -467,6 +476,7 @@ const ICONS = {
   trophy:['########','#.####.#','.######.','..####..','...##...','...##...','..####..','.######.'],
   lock:  ['..####..','.#....#.','.#....#.','########','###..###','###..###','########','........'],
   star:  ['...##...','...##...','########','.######.','..####..','..####..','.##..##.','.#....#.'],
+  search:['.####...','#....#..','#....#..','#....#..','#....#..','.####...','....###.','.....###'],
   sun:   ['...##...','.#....#.','..####..','#.####.#','#.####.#','..####..','.#....#.','...##...'],
   moon:  ['...###..','..###...','.###....','.###....','.###....','.###....','..###...','...###..'],
   hammer:['.######.','.######.','.##++##.','...##...','...##...','...##...','...##...','..####..'],
@@ -533,7 +543,8 @@ let S = null, ITEMS = [], TXNS = [], MARKS = {done: {}, ov: {}}, DAYS = {d: {}};
 const got = {s: false, i: false, t: false, m: false, d: false};
 let store = null, locked = false, slow = false, M = null, PR = null;
 let view = 'hq', mapMonth = null, logMonth = null, billFilter = 'all', simExtra = 100, simMode = 'month', simTarget = '', simRoll = true, inboxAll = false;
-let fxTried = false, fxErr = null, pendingLvl = false, lvlShown = 0;
+let fxTried = false, fxErr = null, pendingLvl = false, lvlShown = 0, searchQ = '';
+const missDone = new Set();
 let prevLevel = null, prevKills = null, wroteDay = null, renderQueued = false, LOGCTX = {};
 const allGot = () => got.s && got.i && got.t && got.m && got.d;
 const accts = () => (S && S.accounts && S.accounts.length) ? S.accounts : DEFAULT_ACCTS;
@@ -917,6 +928,8 @@ function render() {
   $('#fab').innerHTML = px('plus') + 'Log';
   $('#tabs').hidden = !(ready && S);
   $('#gear').hidden = !(ready && S);
+  $('#searchbtn').innerHTML = px('search');
+  $('#searchbtn').hidden = !(ready && S);
   if (locked) { $('#lv').innerHTML = ''; main.innerHTML = emptyState('This board is private', 'Only its owner can see these numbers.'); return; }
   if (!allGot()) {
     $('#lv').innerHTML = '';
@@ -1111,6 +1124,8 @@ function questsBlock() {
   const last = (S.syncs || []).slice(-1)[0];
   if (!last || diffD(last.d, T) >= 7) qs.push({done: false, text: last ? 'Update your balances' : 'Enter your account balances', sub: last ? `Last time ${rel(last.d)}` : 'Makes every number on this page real', xp: '+25 XP', btn: `<button class="btn sm" data-act="sync">Update</button>`});
   const guesses = ITEMS.filter(i => i.guess && !i.paused).length;
+  const miss = missingList();
+  if (miss.length) qs.push({done: false, text: `Check ${miss.length} plan${miss.length > 1 ? 's' : ''} that may be missing a payment this month`, sub: miss.slice(0, 3).map(i => `${i.name} ${fmtDs(missingPrev(i))}`).join(', ') + (miss.length > 3 ? '…' : ''), xp: '', btn: `<button class="btn sm" data-act="missing">Check</button>`});
   if (guesses) qs.push({done: false, text: `Confirm ${guesses} guessed due date${guesses > 1 ? 's' : ''}`, sub: 'I picked a day for bills you gave no date for', xp: '', btn: `<button class="btn sm" data-act="guesses">Fix</button>`});
   ITEMS.filter(i => i.debt && i.count == null && !i.paused).forEach(i => qs.push({done: false, text: `Reveal ${i.name}'s HP`, sub: 'How much do you still owe?', xp: '', btn: `<button class="btn sm" data-act="reveal" data-id="${esc(i.id)}">Reveal</button>`}));
   return `<section class="pn quests"><div class="sec-h"><h2>Today's quests</h2><span class="small muted">${qs.filter(q => q.done).length}/${qs.length} done</span></div><ul>${qs.map(q => `<li class="q ${q.done ? 'done' : ''}"><span class="qbox">${q.done ? px('check') : ''}</span><span class="qtext">${esc(q.text)}<small>${esc(q.sub || '')}</small></span>${q.btn && !q.done ? q.btn : `<span class="qxp">${q.xp}</span>`}</li>`).join('')}</ul></section>`;
@@ -1328,6 +1343,7 @@ function vBills() {
         <p class="small muted">Affiliate, Skool and sponsorship money comes in on random days. Log it with the Log button when it lands, or add an expected payment with a future date.</p></section>
     </div>
     <section class="sec"><div class="sec-h"><h2>Bills</h2><button class="btn sm gold" data-act="newitem">${px('plus')} Add bill</button></div>
+      ${missingList().length ? `<div class="addprev"><span>${missingList().length} plan${missingList().length > 1 ? 's' : ''} may be missing a payment this month.</span><button class="btn sm" data-act="missing">Check</button></div>` : ''}
       <div class="filters">${fb('all', 'All')}${fb('biz', 'Business')}${fb('private', 'Private')}${fb('debt', 'Debts')}${ITEMS.some(i => i.guess) ? fb('guess', 'Guessed dates') : ''}</div>
       ${order.map(c => `<div class="group"><div class="group-h"><b>${esc(c)}</b><span>${eur(sum(groups[c].filter(i => !i.paused).map(monthlyOf)), 0)}/mo</span></div>${groups[c].sort((a, b) => (a.order || 0) - (b.order || 0)).map(billRow).join('')}</div>`).join('') || '<p class="muted">Nothing matches this filter.</p>'}
     </section></div>`;
@@ -1483,6 +1499,7 @@ function openItem(id, preset = {}) {
   const sym = (v.cur || 'EUR') === 'USD' ? '$' : '€';
   openSheet(sheetHead(it ? 'Edit ' + (v.income ? 'income' : 'bill') : v.income ? 'New income' : 'New bill') + `<form class="form" data-form="item" data-id="${esc(id || '')}">
     <input type="hidden" name="onext" value="${ni.next}"><input type="hidden" name="oleft" value="${ni.left}">
+    ${it && !it.firstOk && missingPrev(it) ? `<div class="addprev"><span>First payment is ${fmtD(it.start)}. Also one on <b>${fmtD(missingPrev(it))}</b>?</span><button type="button" class="btn sm gold" data-act="addprev" data-id="${esc(it.id)}">${px('plus')} Add it</button></div>` : ''}
     <label class="fld" for="i-name"><span>Name</span><input type="text" id="i-name" name="name" value="${esc(v.name)}" autocomplete="off" ${it ? '' : 'autofocus'}></label>
     <div class="two"><label class="fld" for="i-amt"><span>Amount each time</span><input type="text" id="i-amt" name="amt" inputmode="decimal" value="${esc(v.amt)}" autocomplete="off"></label>
     <fieldset class="fld"><legend>Currency</legend>${chips('cur', ['EUR', 'USD'], v.cur || 'EUR', ['€', '$'])}</fieldset></div>
@@ -1518,6 +1535,68 @@ function openTxn(id) {
     <label class="fld" for="t-date"><span>Date</span><input type="date" id="t-date" name="date" value="${t.date}"></label>
     <p class="err" id="f-err" hidden></p>
     <div class="formrow"><button type="button" class="btn danger" data-act="deltxn" data-id="${esc(id)}">Delete</button><button class="btn gold">Save</button></div></form>`);
+}
+
+/* ----- plans that may be missing this month's payment -----
+   Plans set up from a list of next-month dates start next month. If their day this month
+   falls after the board started, a payment may go out this month too. */
+function missingPrev(it) {
+  if (!it || it.income || it.paused || it.freq !== 'monthly' || !it.start || it.start <= T) return null;
+  const pm = addM(ym(it.start), -1), [py, pmo] = pm.split('-').map(Number);
+  const prev = `${pm}-${pad(Math.min(it.day || +it.start.slice(8), dim(py, pmo)))}`;
+  if (prev <= (S.created || T) || prev > addD(T, 35)) return null;
+  return prev;
+}
+const missingList = () => ITEMS.filter(i => !i.addedOn && !i.firstOk && !missDone.has(i.id) && missingPrev(i)).sort((a, b) => missingPrev(a) < missingPrev(b) ? -1 : 1);
+function openMissing() {
+  const list = missingList();
+  openSheet(sheetHead('Missing payments?') + `<div class="stack">
+    <p class="hint">These plans have their first payment next month, but their day this month comes after you started the board. If one also goes out this month, add it. The last payment stays the same, so the plan gets one more payment.</p>
+    ${list.length ? `<ul class="mlist">${list.map(i => { const pv = missingPrev(i); return `<li><div><b>${esc(debtName(i))}</b> · ${eur(eurOf(i, i.amt))}<small>${esc(acctName(i.acct))} · first payment now ${fmtD(i.start)}${i.count != null ? ` · ${i.count} payments` : ''}</small></div><div class="row"><button class="btn sm gold" data-act="addprev" data-id="${esc(i.id)}">${px('plus')} Add ${fmtDs(pv)}</button><button class="btn sm" data-act="firstok" data-id="${esc(i.id)}">${MO[+i.start.slice(5, 7) - 1]} is the first</button></div></li>`; }).join('')}</ul>` : `<p class="muted">Nothing left to check. ${px('check')}</p>`}
+    <p class="small muted">Something else missing? Use Search (the magnifier at the top) to find it, or add it on the Bills tab.</p>
+  </div>`);
+}
+function refreshOpenSheet() {
+  const t = ($('#sheet-title') || {}).textContent;
+  if ($('#sheet').hidden) return;
+  if (t === 'Missing payments?') openMissing();
+  else if ($('#q-out')) $('#q-out').innerHTML = searchOut(searchQ);
+  else closeSheet();
+}
+
+/* ----- search ----- */
+const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+function openSearch() {
+  openSheet(sheetHead('Search') + `<form class="form" data-form="search" role="search">
+    <label class="fld" for="q-search"><span>Bills, income, debts, payments, spending</span><input type="search" id="q-search" value="${esc(searchQ)}" placeholder="Dyson, Klarna, Wise, 85…" autocomplete="off" enterkeyhint="search" autofocus></label></form>
+    <div id="q-out" class="sres">${searchOut(searchQ)}</div>`);
+}
+function searchOut(q) {
+  q = String(q || '').trim();
+  if (!q) return `<p class="muted small" style="margin-top:12px">Type a name, account, category or amount. Amounts find anything within a few euros, so <b>85</b> finds an €83.23 payment.</p>`;
+  const toks = norm(q).split(/\s+/).filter(Boolean);
+  const n = num(q);
+  const amtHit = v => n > 0 && Math.abs(Math.abs(+v || 0) - n) <= Math.max(1, n * 0.03);
+  const textHit = s => toks.every(t => s.includes(t));
+  const kinds = {exp: 'spend spending', inc: 'income earned', xfer: 'move transfer', pay: 'strike debt payoff'};
+  const items = ITEMS.filter(i => textHit(norm([i.name, i.group, i.note, i.cat, acctName(i.acct), i.income ? 'income' : 'bill', i.debt ? 'debt boss' : '', i.biz ? 'business' : 'private', i.paused ? 'paused' : ''].join(' '))) || amtHit(eurOf(i, i.amt)) || amtHit(i.amt))
+    .sort((a, b) => (!!a.paused - !!b.paused) || norm(debtName(a)).localeCompare(norm(debtName(b))));
+  const ids = new Set(items.map(i => i.id));
+  const os = occ(addD(T, -60), addD(T, 120), true).filter(o => ids.has(o.it.id) || amtHit(o.v));
+  const up = os.filter(o => o.date >= T).slice(0, 10), past = os.filter(o => o.date < T).reverse().slice(0, 6);
+  const txs = TXNS.filter(t => textHit(norm([t.note, t.cat, t.src, acctName(t.acct), t.to ? acctName(t.to) : '', kinds[t.kind]].join(' '))) || amtHit(t.eur) || amtHit(t.orig))
+    .sort((a, b) => a.date < b.date ? 1 : a.date > b.date ? -1 : (b.at || 0) - (a.at || 0)).slice(0, 12);
+  if (!items.length && !os.length && !txs.length) return `<p class="muted" style="margin-top:12px">Nothing matches “${esc(q)}”. Try part of a name, an account like Wise, or an amount.</p>`;
+  const itemRow = i => {
+    const pv = !i.firstOk && missingPrev(i);
+    const ended = !i.paused && i.freq !== 'once' && !nextOf(i);
+    return billRow(i).replace('</span><span class="ba', `${ended ? ' <span class="tag">Finished</span>' : ''}</span><span class="ba`)
+      + (pv ? `<div class="addprev"><span>Starts ${fmtD(i.start)}. Also a payment on <b>${fmtD(pv)}</b>?</span><button class="btn sm gold" data-act="addprev" data-id="${esc(i.id)}">${px('plus')} Add it</button></div>` : '');
+  };
+  return `${items.length ? `<h3>Bills, income and debts · ${items.length}</h3><div class="group">${items.map(itemRow).join('')}</div>` : ''}
+    ${up.length ? `<h3>Coming up</h3><ul class="evlist">${up.map(o => evRow(o, {date: true})).join('')}</ul>` : ''}
+    ${past.length ? `<h3>Recent payments</h3><ul class="evlist">${past.map(o => evRow(o, {date: true})).join('')}</ul>` : ''}
+    ${txs.length ? `<h3>Logged</h3><ul class="evlist">${txs.map(t => txnRow(t, {date: true})).join('')}</ul>` : ''}`;
 }
 
 /* ----- one payment ----- */
@@ -1776,6 +1855,16 @@ const ACTIONS = {
     : save(store.update('fin/days', {d: {[T]: {a: r2(M.allow), t: r2(M.target), ns: true}}}), 'No-spend day locked in. Hold it and earn <b>+30 XP</b> tomorrow.'),
   occ: b => openOcc(b.dataset.key, b.dataset.back),
   level: () => openLevel(),
+  search: () => openSearch(),
+  missing: () => openMissing(),
+  addprev: b => {
+    const it = ITEMS.find(i => i.id === b.dataset.id), pv = it && missingPrev(it); if (!pv) return;
+    const patch = {start: pv, day: it.day || +pv.slice(8)};
+    if (it.count != null) patch.count = it.count + 1;
+    missDone.add(it.id);
+    save(store.update('items/' + it.id, patch), `${esc(debtName(it))}: added ${fmtD(pv)}`).then(() => setTimeout(refreshOpenSheet, 60));
+  },
+  firstok: b => { missDone.add(b.dataset.id); save(store.update('items/' + b.dataset.id, {firstOk: true}), 'Got it').then(() => setTimeout(refreshOpenSheet, 60)); },
   theme: () => setTheme(isDark() ? 'light' : 'dark'),
   avatar: b => save(store.update('fin/settings', {avatar: b.dataset.av}), 'Avatar equipped').then(() => openLevel(b.dataset.av)),
   strike: b => openStrike(b.dataset.id, {group: b.dataset.group, amt: b.dataset.amt}),
@@ -1822,6 +1911,7 @@ const ACTIONS = {
   },
 };
 const FORMS = {
+  search() { const i = $('#q-search'); if (i) i.blur(); },
   spend(f, fd) {
     const amt = num(fd.get('amt')); if (!(amt > 0)) return fail('Type how much you spent.');
     const date = fd.get('date') || T;
@@ -1849,14 +1939,14 @@ const FORMS = {
   plan(f, fd) {
     const amt = num(fd.get('amt')), name = (fd.get('name') || '').trim(), date = fd.get('date');
     if (!name) return fail('Give it a name.'); if (!(amt > 0)) return fail('Type the amount.'); if (!date) return fail('Pick the due date.');
-    save(store.set('items/' + uid(), {name, amt: r2(amt), cur: 'EUR', acct: fd.get('acct'), cat: fd.get('cat'), biz: !!fd.get('biz'), freq: 'once', start: date, day: +date.slice(8), count: null, order: 200}))
+    save(store.set('items/' + uid(), {name, amt: r2(amt), cur: 'EUR', acct: fd.get('acct'), cat: fd.get('cat'), biz: !!fd.get('biz'), freq: 'once', start: date, day: +date.slice(8), count: null, order: 200, addedOn: T}))
       .then(() => { closeSheet(); toast(`${esc(name)} added for ${fmtD(date)}`); });
   },
   later(f, fd) {
     const amt = num(fd.get('amt')), name = (fd.get('name') || '').trim(), date = fd.get('date'), count = parseInt(fd.get('count'), 10);
     if (!name) return fail('What did you buy?'); if (!(amt > 0)) return fail('Type the amount of each payment.'); if (!(count > 0)) return fail('How many payments?'); if (!date) return fail('Pick the first payment date.');
     const acct = fd.get('acct'), kl = acct === 'klarna';
-    save(store.set('items/' + uid(), {name, amt: r2(amt), cur: 'EUR', acct, cat: kl ? 'Klarna' : 'Debts', group: kl ? 'Klarna' : null, debt: true, freq: 'monthly', day: +date.slice(8), start: date, count, order: 39}))
+    save(store.set('items/' + uid(), {name, amt: r2(amt), cur: 'EUR', acct, cat: kl ? 'Klarna' : 'Debts', group: kl ? 'Klarna' : null, debt: true, freq: 'monthly', day: +date.slice(8), start: date, count, order: 39, addedOn: T}))
       .then(() => { closeSheet(); toast(`New boss: ${esc(name)} · ${eur(amt * count, 0)} HP`); });
   },
   sync(f, fd) {
@@ -1902,6 +1992,7 @@ const FORMS = {
     } else if (old && !changed && r2(amt) !== r2(old.amt) && freq !== 'once') {
       data.amtHist = histWith(old, fd.get('onext') || T);
     } else if (changed && String(leftRaw) !== String(fd.get('oleft'))) data.lastAmt = null;
+    if (!old) data.addedOn = T;
     if (!data.order) data.order = income ? 5 : 150;
     save(store.set('items/' + (id || uid()), data), id ? 'Saved' : `${esc(name)} added`).then(closeSheet);
   },
@@ -1979,6 +2070,7 @@ document.addEventListener('change', e => {
   if (e.target.closest('form[data-form="strike"]')) strikePreview();
 });
 document.addEventListener('input', e => {
+  if (e.target.id === 'q-search') { searchQ = e.target.value; $('#q-out').innerHTML = searchOut(searchQ); }
   if (e.target.id === 'sim-extra') { simExtra = +e.target.value; $('#sim-val').textContent = eur(simExtra, 0); $('#sim-usd').textContent = '≈ ' + usd(simExtra / rate()); $('#sim-out').innerHTML = simOut(); }
   if (e.target.closest('form[data-form="strike"]')) strikePreview();
   if (['i-owed', 'i-amt', 'i-next'].includes(e.target.id) && $('#i-owed-prev')) owedPreview();
