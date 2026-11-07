@@ -1568,7 +1568,7 @@ function refreshOpenSheet() {
 const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 function openSearch() {
   openSheet(sheetHead('Search') + `<form class="form" data-form="search" role="search">
-    <label class="fld" for="q-search"><span>Bills, income, debts, payments, spending</span><input type="search" id="q-search" value="${esc(searchQ)}" placeholder="Dyson, Klarna, Wise, 85…" autocomplete="off" enterkeyhint="search" autofocus></label></form>
+    <label class="fld" for="q-search"><span>Bills, income, debts, payments, spending</span><input type="search" id="q-search" value="${esc(searchQ)}" placeholder="Rent, Klarna, Wise, 85…" autocomplete="off" enterkeyhint="search" autofocus></label></form>
     <div id="q-out" class="sres">${searchOut(searchQ)}</div>`);
 }
 function searchOut(q) {
