@@ -15,6 +15,7 @@ It then opens full screen like a normal app and works offline.
 
 - Everything you enter is kept **on the device**, in the browser's storage. This repository contains no personal data.
 - **Cloud backup** (Settings, after connecting your sync service): the board is locked on the device with a passphrase you choose (PBKDF2 + AES-GCM), then kept by your own sync service. Nobody else can open it. Every device with the passphrase loads the newest board when it opens; if two devices both changed it, the app asks which one to keep. **Earlier backups** goes back a month.
+- **Notifications** (Settings, after connecting your sync service): money in and out on your connected accounts, bills due or not gone out, and banks that stop syncing. They're encrypted for each device. For bill reminders, the next two weeks of bills (name, amount, date) go to your sync service.
 - New device: open the app, tap **From cloud backup**, and enter the sync address, app key and passphrase.
 - Without cloud backup, use **Settings → Save backup file** and **Restore a backup**. On iPhone, deleting the home-screen icon also deletes its data, so save a file every week; the app reminds you.
 

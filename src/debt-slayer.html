@@ -1048,6 +1048,8 @@ function afterRender() {
   if (cloudGate) return;
   if (PR.lvl > Math.max(+S.seenLvl || 1, lvlShown)) { if ($('#sheet').hidden) openLevelUp(); else pendingLvl = true; }
   if (!fxTried) { fxTried = true; refreshFx(false); }
+  if (!pushChecked) { pushChecked = true; pushRefresh(); }
+  planLater();
   if (!liveTried && liveOn()) { liveTried = true; liveSync(Date.now() - (S.live.lastAt || 0) > 3 * 60000).then(r => liveToast(r, true)); }
   if (prevKills != null && PR.kills > prevKills) { toast('Boss down! A debt is fully paid.', 'big'); confetti(); }
   prevLevel = PR.lvl; prevKills = PR.kills;
@@ -2154,6 +2156,103 @@ async function openCloudList() {
   } catch (e) { const box = $('#cb-list'); if (box) box.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }
 
+/* ----- notifications -----
+   Your sync service sends them (Web Push), encrypted for this device. It tells you about money moving on your
+   connected accounts, bills due or not gone out, and banks that stop syncing. For bill reminders the app hands the
+   service your next two weeks of bills (name, amount, date, account), refreshed whenever the board changes. */
+const PUSH_KEY = 'debtslayer.push';
+let planSent = '', planTimer = null, pushChecked = false;
+const pushConf = () => readJSON(PUSH_KEY);
+const pushCan = () => 'serviceWorker' in navigator && typeof PushManager !== 'undefined' && typeof Notification !== 'undefined';
+const fromB64u = s => { const t = String(s).replace(/-/g, '+').replace(/_/g, '/'); return fromB64(t + '='.repeat((4 - t.length % 4) % 4)); };
+const sameBytes = (a, b) => { if (!a || !b) return false; const x = new Uint8Array(a), y = new Uint8Array(b); return x.length === y.length && x.every((v, i) => v === y[i]); };
+async function pushSubscription(publicKey) {
+  const reg = await navigator.serviceWorker.ready, key = fromB64u(publicKey);
+  let sub = await reg.pushManager.getSubscription();
+  if (sub && !sameBytes(sub.options && sub.options.applicationServerKey, key)) { await sub.unsubscribe(); sub = null; }
+  return sub || reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: key});
+}
+async function signUp(sub, prefs) {
+  const dev = device();
+  const r = await cloudFetch('/v1/push/subscribe', {method: 'POST', body: {subscription: sub.toJSON(), device: dev.id, label: dev.label, prefs}});
+  if (r.status !== 200) throw fail$(r);
+  writeJSON(PUSH_KEY, {endpoint: sub.endpoint, prefs});
+}
+async function pushOn(prefs) {
+  // the permission prompt has to come straight from the tap, before anything else is awaited
+  if (Notification.permission === 'denied') throw new Error('Notifications are blocked for Debt Slayer. Allow them in your phone’s Settings › Notifications › Debt Slayer, then try again.');
+  if (Notification.permission !== 'granted' && (await Notification.requestPermission()) !== 'granted') throw new Error("Notifications weren't allowed.");
+  const k = await cloudFetch('/v1/push/key'); if (k.status !== 200) throw fail$(k);
+  await signUp(await pushSubscription(k.body.publicKey), prefs);
+  planSent = '';
+  if (!!(S.notify && S.notify.bills) !== !!prefs.bills) await store.update('fin/settings', {notify: {bills: !!prefs.bills}});
+  if (!prefs.bills) await cloudFetch('/v1/push/plan', {method: 'PUT', body: {reminders: []}});
+}
+async function pushOff() {
+  const c = pushConf();
+  try { const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription(); if (sub) await sub.unsubscribe(); } catch (e) {}
+  if (c) await cloudFetch('/v1/push/unsubscribe', {method: 'POST', body: {endpoint: c.endpoint}}).catch(() => {});
+  writeJSON(PUSH_KEY, null);
+}
+/** on open: if the phone gave this device a new push address, sign up again quietly */
+async function pushRefresh() {
+  const c = pushConf();
+  if (!c || !pushCan() || !liveOn()) return;
+  if (Notification.permission !== 'granted') { writeJSON(PUSH_KEY, null); return; }
+  try {
+    const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+    if (sub && sub.endpoint === c.endpoint) return;
+    const k = await cloudFetch('/v1/push/key'); if (k.status !== 200) return;
+    await signUp(await pushSubscription(k.body.publicKey), c.prefs);
+  } catch (e) { console.warn('push', e); }
+}
+/** the words the sync service looks for on a statement before it nags about a bill */
+function matchWords(it) {
+  const words = norm([it.name, it.group].filter(Boolean).join(' ')).split(/[^a-z0-9]+/).filter(w => w.length >= 3 && !WEAK.has(w)), out = new Set(words);
+  words.forEach(w => (ALIAS[w] || []).forEach(a => out.add(a)));
+  String(it.match || '').split(',').map(s => norm(s.trim())).filter(Boolean).forEach(x => out.add(x));
+  return [...out].slice(0, 20);
+}
+/** reminders for the sync service: 9:00 on the day a bill is due, and 10:00 two days later if the bank hasn't shown it */
+function buildPlan() {
+  const out = [], at = (d, h) => { const x = P(d); x.setHours(h, 0, 0, 0); return x.toISOString(); };
+  const banks = {}, since = (S.live && S.live.since) || T;
+  Object.entries((S.live && S.live.map) || {}).forEach(([bank, app]) => { if (app) (banks[app] = banks[app] || []).push(bank); });
+  for (const o of occ(addD(T, -3), addD(T, 14))) {
+    if (o.v >= 0 || o.done) continue;
+    const name = debtName(o.it), amt = eur(-o.v), where = acctName(o.acct), id = o.key + ':' + o.date;
+    if (o.date >= T) out.push({id: 'due:' + id, at: at(o.date, 9), title: `${name} is due today`, body: `${amt} from ${where}`});
+    if (isLiveAcct(o.acct) && o.date >= since && banks[o.acct]) out.push({id: 'late:' + id, at: at(addD(o.date, 2), 10), title: `${name} hasn't gone out`,
+      body: `${amt} was due ${fmtD(o.date)}. ${where} hasn't shown it yet.`, check: {after: addD(o.date, -4), accounts: banks[o.acct], cents: Math.round(-o.v * 100), words: matchWords(o.it)}});
+  }
+  return out;
+}
+function planLater() {
+  if (!liveOn() || !(S.notify && S.notify.bills)) return;
+  const plan = JSON.stringify(buildPlan());
+  if (plan === planSent) return;
+  clearTimeout(planTimer);
+  planTimer = setTimeout(() => cloudFetch('/v1/push/plan', {method: 'PUT', body: {reminders: JSON.parse(plan)}})
+    .then(r => { if (r.status === 200) planSent = plan; }).catch(e => console.warn('plan', e)), 4000);
+}
+function pushSettings() {
+  if (!store || store.kind !== 'local') return '';
+  if (!liveOn()) return `<h2>Notifications</h2><p class="small muted">Connect live bank sync above first. Your sync service sends the notifications.</p>`;
+  if (!pushCan()) return `<h2>Notifications</h2><p class="small muted">This browser can't get notifications. On iPhone, open Debt Slayer from its home-screen icon (iOS 16.4 or newer) and try here.</p>`;
+  const c = pushConf(), p = (c && c.prefs) || {money: true, bills: true, sync: true};
+  const opt = (name, label, hint) => `<label class="check"><input type="checkbox" name="${name}" ${p[name] !== false ? 'checked' : ''}> ${label}</label><p class="small muted" style="margin:-4px 0 0">${hint}</p>`;
+  return `<h2>Notifications</h2>
+    <p class="small muted">${c ? `On for this ${esc(device().label)}.` : 'Get a notification on this device when money moves or a bill needs you.'} Each one is encrypted for this device, so Apple's and Google's push services can't read it.</p>
+    <form class="form" data-form="push">
+      ${opt('money', 'Money in and out', 'Every payment, top-up and move on your connected accounts, within about 5 minutes of the bank showing it. PayPal shows things about 3 hours late.')}
+      ${opt('bills', 'Bills', "At 9:00 on the day a bill is due, and 2 days later if the bank still hasn't shown it. For this, your next two weeks of bills go to your sync service.")}
+      ${opt('sync', 'Sync problems', 'When a bank fails twice in a row.')}
+      <p class="err" id="pn-err" hidden></p>
+      <div class="formrow"><button class="btn gold">${c ? 'Save' : 'Turn on notifications'}</button>${c ? '<button type="button" class="btn" data-act="pushtest">Send a test</button>' : ''}</div>
+      ${c ? '<div><button type="button" class="btn ghost danger" data-act="pushoff">Turn off on this device</button></div>' : ''}
+    </form>`;
+}
+
 /* ----- search ----- */
 const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 function openSearch() {
@@ -2422,6 +2521,7 @@ function openSettings() {
     <button class="btn gold wide">Save settings</button></form>
     <div class="stack" style="margin-top:22px">${liveSettings()}</div>
     <div class="stack" style="margin-top:22px">${cloudSettings()}</div>
+    <div class="stack" style="margin-top:22px">${pushSettings()}</div>
     <div class="form" style="margin-top:22px">
       <label class="fld" for="s-backup"><span>Backup</span><textarea id="s-backup" readonly>${esc(backup)}</textarea><small>Copy this somewhere safe. Paste a backup below to restore it.</small></label>
       <div class="formrow"><button type="button" class="btn" data-act="copybackup">Copy backup</button></div>
@@ -2491,6 +2591,16 @@ const ACTIONS = {
   level: () => openLevel(),
   hydrafrom: b => openHydraFrom(b.dataset.group),
   livesync: b => { b.disabled = true; b.textContent = 'Syncing…'; liveSync(true).then(r => { closeSheet(); liveToast(r); }); },
+  pushtest: b => {
+    const c = pushConf(); if (!c) return;
+    b.disabled = true; b.textContent = 'Sending…';
+    cloudFetch('/v1/push/test', {method: 'POST', body: {endpoint: c.endpoint}}).then(r => {
+      const res = ((r.body && r.body.results) || [])[0];
+      if (res && res.status >= 200 && res.status < 300) toast('Sent. It should arrive in a few seconds.');
+      else toast(res ? `The push service answered ${res.status}. Turn notifications off and on again.` : "Your sync service doesn't know this device. Tap Save to sign it up again.", 'bad');
+    }).catch(e => toast(esc(e.message), 'bad')).finally(() => { b.disabled = false; b.textContent = 'Send a test'; });
+  },
+  pushoff: () => { pushOff().then(() => { closeSheet(); toast('Notifications are off on this device.'); }); },
   unmatch: b => { unmatchBill(b.dataset.key).then(() => { closeSheet(); toast('Unticked. That bank payment is logged on its own now.'); }); },
   cloudnow: b => {
     b.disabled = true; b.textContent = 'Backing up…';
@@ -2585,6 +2695,13 @@ const FORMS = {
     if (!r) { if (btn) { btn.disabled = false; btn.textContent = 'Try again'; } return er(`Sync failed: ${liveErr}`); }
     closeSheet(); liveToast(r);
     if (first) setTimeout(() => { openSettings(); const b = $('#lv-url'); if (b) b.scrollIntoView({block: 'center'}); }, 400);
+  },
+  async push(f, fd) {
+    const prefs = {money: fd.get('money') === 'on', bills: fd.get('bills') === 'on', sync: fd.get('sync') === 'on'}, btn = f.querySelector('button.gold'), was = !!pushConf();
+    const er = m => { const e = $('#pn-err'); if (e) { e.textContent = m; e.hidden = false; } };
+    btn.disabled = true; btn.textContent = was ? 'Saving…' : 'Turning on…';
+    try { await pushOn(prefs); closeSheet(); toast(was ? 'Saved' : 'Notifications are on. Send a test from Settings to see one.'); }
+    catch (e) { btn.disabled = false; btn.textContent = was ? 'Save' : 'Turn on notifications'; er(e.message || String(e)); }
   },
   async cloud(f, fd) {
     const er = m => { const e = $('#cb-err'); if (e) { e.textContent = m; e.hidden = false; } };
@@ -2854,7 +2971,7 @@ const API = {
   setToday: d => { T = d; },
   useLocalStore: () => { store = localStore(); attach(); return store; },
   compute, occ, rawOcc, project, monthStats, debtOf, bosses, simulate, progress, unlocks,
-  matchName, guessCat, guessSrc, applyFeed, num, exportAll, importAll, unmatchBill, bankId, dayLimit, dayOk, liveAlert, setLiveErr: e => { liveErr = e; },
+  matchName, matchWords, buildPlan, guessCat, guessSrc, applyFeed, num, exportAll, importAll, unmatchBill, bankId, dayLimit, dayOk, liveAlert, setLiveErr: e => { liveErr = e; },
   cloud: {seal, unseal, newLockKey, keyForEnvelope, boardHash, upload: cloudUpload, check: cloudCheck, load: cloudLoad, conf: cloudConf, device,
     state: () => ({cloudErr, cloudPending, cloudDirtyAt, cloudTimer: !!cloudTimer}), store: () => store},
 };
