@@ -127,6 +127,8 @@ rep("""  if (store.kind === 'local') window.__debtSlayer = {importAll, exportAll
 
 # ---- service worker: a new cache version for every new build ----
 version = 'ds-' + hashlib.sha256(h.encode()).hexdigest()[:10]
+# the page knows its own version, so it can tell when a newer one is out (see checkUpdate in the source)
+h = h.replace('<meta charset="utf-8">', f'<meta charset="utf-8">\n<meta name="ds-version" content="{version}">', 1)
 sw = re.sub(r"const VERSION = '[^']*';", f"const VERSION = '{version}';", SW.read_text(), count=1)
 assert sw.count(version) == 1, 'sw.js has no VERSION line'
 

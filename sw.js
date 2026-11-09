@@ -1,5 +1,5 @@
 // Offline support: the page is fetched fresh when online and served from cache when not.
-const VERSION = 'ds-485623d3da';
+const VERSION = 'ds-13ea764178';
 const FONTS = 'ds-fonts';
 const SHELL = ['./', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png', './icons/favicon-32.png'];
 

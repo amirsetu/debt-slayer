@@ -2160,6 +2160,23 @@ async function openCloudList() {
    Your sync service sends them (Web Push), encrypted for this device. It tells you about money moving on your
    connected accounts, bills due or not gone out, and banks that stop syncing. For bill reminders the app hands the
    service your next two weeks of bills (name, amount, date, account), refreshed whenever the board changes. */
+/* the phone app updates itself: a home-screen app on iPhone can stay in memory for days, so when it comes back to the
+   front it checks whether a newer version is out and reloads (never while a sheet is open or you're typing) */
+const BUILD = (() => { try { const m = document.querySelector('meta[name="ds-version"]'), v = m && m.getAttribute('content'); return typeof v === 'string' && v ? v : 'dev'; } catch (e) { return 'dev'; } })();
+let updChecked = 0;
+async function checkUpdate() {
+  if (BUILD === 'dev' || Date.now() - updChecked < 60000) return;
+  updChecked = Date.now();
+  try {
+    const m = (await (await fetch('sw.js?v=' + Date.now(), {cache: 'no-store'})).text()).match(/const VERSION = '([^']+)'/);
+    if (!m || m[1] === BUILD || !$('#sheet').hidden) return;
+    const a = document.activeElement; if (a && a.matches && a.matches('input, textarea, select')) return;
+    if (readJSON('debtslayer.updating') === m[1]) return; // already reloaded once for this version
+    writeJSON('debtslayer.updating', m[1]);
+    toast('Updating to the new version…');
+    setTimeout(() => location.reload(), 700);
+  } catch (e) {}
+}
 const PUSH_KEY = 'debtslayer.push';
 let planSent = '', planTimer = null, pushChecked = false;
 const pushConf = () => readJSON(PUSH_KEY);
@@ -2248,7 +2265,7 @@ function pushSettings() {
       ${opt('bills', 'Bills', "At 9:00 on the day a bill is due, and 2 days later if the bank still hasn't shown it. For this, your next two weeks of bills go to your sync service.")}
       ${opt('sync', 'Sync problems', 'When a bank fails twice in a row.')}
       <p class="err" id="pn-err" hidden></p>
-      <div class="formrow"><button class="btn gold">${c ? 'Save' : 'Turn on notifications'}</button>${c ? '<button type="button" class="btn" data-act="pushtest">Send a test</button>' : ''}</div>
+      <div class="formrow"><button type="button" class="btn gold" data-act="pushon">${c ? 'Save' : 'Turn on notifications'}</button>${c ? '<button type="button" class="btn" data-act="pushtest">Send a test</button>' : ''}</div>
       ${c ? '<div><button type="button" class="btn ghost danger" data-act="pushoff">Turn off on this device</button></div>' : ''}
     </form>`;
 }
@@ -2528,7 +2545,8 @@ function openSettings() {
       <label class="fld" for="s-import"><span>Restore from backup</span><textarea id="s-import" placeholder="Paste a backup here"></textarea></label>
       <div class="formrow"><button type="button" class="btn" data-act="import">Restore</button></div>
       <p class="err" id="f-err" hidden></p>
-    </div>`);
+    </div>
+    <p class="small muted" style="margin-top:22px">Version ${esc(BUILD)}</p>`);
 }
 
 /* ---------- data ops ---------- */
@@ -2591,6 +2609,8 @@ const ACTIONS = {
   level: () => openLevel(),
   hydrafrom: b => openHydraFrom(b.dataset.group),
   livesync: b => { b.disabled = true; b.textContent = 'Syncing…'; liveSync(true).then(r => { closeSheet(); liveToast(r); }); },
+  // a click, not a form submit: iPhone only shows the permission prompt straight from a tap
+  pushon: b => { const f = b.closest('form'); FORMS.push(f, new FormData(f)); },
   pushtest: b => {
     const c = pushConf(); if (!c) return;
     b.disabled = true; b.textContent = 'Sending…';
@@ -2701,7 +2721,11 @@ const FORMS = {
     const er = m => { const e = $('#pn-err'); if (e) { e.textContent = m; e.hidden = false; } };
     btn.disabled = true; btn.textContent = was ? 'Saving…' : 'Turning on…';
     try { await pushOn(prefs); closeSheet(); toast(was ? 'Saved' : 'Notifications are on. Send a test from Settings to see one.'); }
-    catch (e) { btn.disabled = false; btn.textContent = was ? 'Save' : 'Turn on notifications'; er(e.message || String(e)); }
+    catch (e) {
+      btn.disabled = false; btn.textContent = was ? 'Save' : 'Turn on notifications'; er(e.message || String(e));
+      const standalone = !!(navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches));
+      cloudFetch('/v1/push/report', {method: 'POST', body: {error: String(e.message || e).slice(0, 300), permission: typeof Notification !== 'undefined' ? Notification.permission : 'none', standalone, version: BUILD, device: device().label}}).catch(() => {});
+    }
   },
   async cloud(f, fd) {
     const er = m => { const e = $('#cb-err'); if (e) { e.textContent = m; e.hidden = false; } };
@@ -2931,6 +2955,7 @@ function owedPreview() {
 }
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { if (cloudDirtyAt && cloudOn()) cloudUpload(false); return; }
+  checkUpdate();
   if (cloudOn() && !cloudGate && Date.now() - cloudLastCheck > 60000) cloudGate = cloudCheck().finally(() => { cloudGate = null; });
   if (isoOf(new Date()) !== T) scheduleRender();
   if (liveOn() && Date.now() - (S.live.lastAt || 0) > 3 * 60000) liveSync(true).then(r => liveToast(r, true));
@@ -2952,6 +2977,7 @@ async function boot() {
   if (store.kind === 'local') window.__debtSlayer = {importAll, exportAll};
   attach();
   setTimeout(() => { if (!allGot()) { slow = true; scheduleRender(); } }, 10000);
+  setTimeout(checkUpdate, 4000);
 }
 /* keep the in-memory board in step with the store */
 function attach() {
