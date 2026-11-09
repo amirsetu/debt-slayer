@@ -113,9 +113,9 @@ rep("Start a blank board, then add your income, bills and debts from the Bills t
 # ---- device-only banner and weekly backup nudge on HQ ----
 rep("""main.innerHTML = html + (store.kind === 'local' ? `<p class="banner">Saved in this browser only.</p>` : '');""",
     """main.innerHTML = html + (store.kind === 'local' ? cloudOn() ? `<p class="banner">Cloud backup on · ${cloudStatus()}</p>` : `<p class="banner">Saved on this device only. ${lastBackup() ? `Last backup ${esc(rel(lastBackup()))}.` : 'No backup yet.'} <button class="linkbtn" data-act="savebackup">Save a backup</button></p>` : '');""")
-rep("""  return `<div class="hq"><div class="col">${greet()}""",
+rep("""  return `<div class="hq"><div class="col">${liveAlert()}${greet()}""",
     """  const nudge = store.kind === 'local' && !cloudOn() && backupDue() && ITEMS.length ? `<div class="nudge"><span>${lastBackup() ? `Last backup ${esc(rel(lastBackup()))}.` : 'No backup yet.'} This phone is the only copy of your board.</span><button class="btn sm" data-act="savebackup">Save backup</button></div>` : '';
-  return `<div class="hq"><div class="col">${nudge}${greet()}""")
+  return `<div class="hq"><div class="col">${liveAlert()}${nudge}${greet()}""")
 
 # ---- offline + ask the browser to keep the data ----
 rep("""  if (store.kind === 'local') window.__debtSlayer = {importAll, exportAll};""",

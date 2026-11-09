@@ -58,3 +58,24 @@ test('on a live account, a bill due today counts until the bank shows it went ou
   const paid = await load({ today: TODAY, board: board({ settings: s, items: { rent: rentToday }, marks: { done: { 'rent@2026-11-10': 1 }, ov: {} } }) });
   near(paid.compute().now, 1000, 'the bank balance already has it');
 });
+
+test("on a live account, a bill the bank hasn't shown stays off your money and is listed as waiting", async () => {
+  const s = settings({ live: { url: 'https://sync.test', since: '2026-11-01' }, acctSync: { qonto: { d: TODAY, at: 5, live: true } } });
+  const rent7 = Object.assign({}, ITEMS.rent, { start: '2026-01-07', day: 7, amt: 800 });
+  const app = await load({ today: TODAY, board: board({ settings: s, items: { rent: rent7 } }) });
+  const R = app.compute();
+  near(R.now, 200, 'rent is 3 days late and still owed');
+  assert.equal(R.waiting.map(o => o.date).join(), '2026-11-07');
+
+  const paid = await load({ today: TODAY, board: board({ settings: s, items: { rent: rent7 }, marks: { done: { 'rent@2026-11-07': 1 }, ov: {} } }) });
+  near(paid.compute().now, 1000, 'ticked: the bank balance already has it');
+  assert.equal(paid.compute().waiting.length, 0);
+});
+
+test('bills from before live sync started are not held back', async () => {
+  const s = settings({ live: { url: 'https://sync.test', since: '2026-11-08' }, acctSync: { qonto: { d: TODAY, at: 5, live: true } } });
+  const rent7 = Object.assign({}, ITEMS.rent, { start: '2026-01-07', day: 7, amt: 800 });
+  const app = await load({ today: TODAY, board: board({ settings: s, items: { rent: rent7 } }) });
+  near(app.compute().now, 1000, 'balance');
+  assert.equal(app.compute().waiting.length, 0);
+});

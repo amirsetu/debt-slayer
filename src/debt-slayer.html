@@ -428,6 +428,9 @@ input[type=range]{width:100%;accent-color:var(--gold)}
 .seg button[aria-pressed="true"]{background:var(--gold);color:var(--gold-ink)}
 .err{color:var(--hit);font-size:13px;font-weight:800}
 .hint{background:var(--panel-2);border-radius:14px;padding:10px 12px;font-size:13px;color:var(--muted)}
+.alertbox{display:flex;gap:12px;align-items:flex-start;justify-content:space-between;border:2px solid var(--hit);border-radius:var(--r);padding:12px 14px;background:var(--panel);font-size:14px;line-height:1.45}
+.alertbox .btn{flex:none}
+.receipt{display:grid;gap:8px}
 .hint b{color:var(--ink)}
 .formrow{display:flex;gap:10px;flex-wrap:wrap}
 .formrow .btn{flex:1}
@@ -631,7 +634,7 @@ function num(s, decimalOnly) {
 
 /* ---------- state ---------- */
 let T = isoOf(new Date());
-let S = null, ITEMS = [], TXNS = [], MARKS = {done: {}, ov: {}}, DAYS = {d: {}};
+let S = null, ITEMS = [], TXNS = [], MARKS = {done: {}, ov: {}, via: {}}, DAYS = {d: {}};
 const got = {s: false, i: false, t: false, m: false, d: false};
 let store = null, locked = false, slow = false, M = null, PR = null;
 let view = 'hq', mapMonth = null, logMonth = null, billFilter = 'all', simExtra = 100, simMode = 'month', simTarget = '', simRoll = true, inboxAll = false;
@@ -763,7 +766,8 @@ const syncOf = a => (S.acctSync && S.acctSync[a]) || {d: S.syncDate || T, at: S.
 const counts = (t, a) => { const s = syncOf(a); return t.date > s.d || (t.date === s.d && (t.at || 0) > (s.at || 0)); };
 const tCounts = t => counts(t, t.acct);
 const isLiveAcct = a => !!(S && S.live && S.live.url && Object.values(S.live.map || {}).includes(a));
-const liveToday = a => { const s = S.acctSync && S.acctSync[a]; return !!(s && s.live && s.d === T); };
+/** the bank balance for this account already covers this day: anything due by then that it hasn't shown is still owed */
+const liveCovers = (a, d) => { const s = S.acctSync && S.acctSync[a]; return !!(s && s.live && d <= s.d); };
 
 function project(fromBal, end) {
   const ev = new Map();
@@ -789,8 +793,11 @@ function compute() {
   const early = accts().map(a => syncOf(a.id).d).concat(S.syncDate || T).reduce((m, d) => d < m ? d : m, T);
   const past = early < T ? occ(addD(early, 1), T).filter(o => o.date > syncOf(o.acct).d) : [];
   past.forEach(o => { bal[o.acct] = (bal[o.acct] || 0) + o.v; });
-  // a bank balance from today already includes what went out; today's bills that haven't gone through are still to come
-  occ(T, T).filter(o => o.v < 0 && !o.done && liveToday(o.acct)).forEach(o => { bal[o.acct] = (bal[o.acct] || 0) + o.v; });
+  // on a live account the bank balance is the truth. A bill it hasn't shown yet is still owed, however late, so it stays off
+  // your money until the bank shows it (or you tick it, move it or skip it). Only bills from when live sync started count.
+  const liveFrom = [(S.live && S.live.since) || T, addD(T, -60)].sort().pop();
+  R.waiting = liveFrom <= T ? occ(liveFrom, T).filter(o => o.v < 0 && !o.done && liveCovers(o.acct, o.date)) : [];
+  R.waiting.forEach(o => { bal[o.acct] = (bal[o.acct] || 0) + o.v; });
   TXNS.forEach(t => { if (t.date <= T) tEff(t).forEach(([a, v]) => { if (counts(t, a)) bal[a] = (bal[a] || 0) + v; }); });
   R.bal = bal; R.now = sum(Object.values(bal));
   R.inbox = past.filter(o => !o.done && o.date < T);
@@ -943,9 +950,11 @@ function progress() {
   const syncDays = new Set((S.syncs || []).map(s => s.d)).size; parts.syncs = 25 * syncDays;
   const pays = TXNS.filter(t => t.kind === 'pay');
   parts.strikes = sum(pays.map(t => Math.floor((+t.eur || 0) / 10)));
-  const ok = d => { const r = DAYS.d[d]; return r && (spentOn[d] || 0) <= (r.t ?? r.a ?? 0) + 0.005; };
-  let under = 0, ns = 0;
-  Object.keys(DAYS.d).forEach(d => { if (d >= T) return; if (ok(d)) under++; if (DAYS.d[d] && DAYS.d[d].ns && !(spentOn[d] > 0)) ns++; });
+  const ok = d => { const lim = dayLimit(d); return lim != null && (spentOn[d] || 0) <= lim + 0.005; };
+  let under = 0, ns = 0, best = 0, cur = 0;
+  const first = Object.keys(DAYS.d).sort()[0];
+  if (first) for (let d = first, i = 0; d < T && i < 3650; d = addD(d, 1), i++) { if (ok(d)) { under++; best = Math.max(best, ++cur); } else cur = 0; }
+  Object.keys(DAYS.d).forEach(d => { if (d < T && DAYS.d[d] && DAYS.d[d].ns && !(spentOn[d] > 0)) ns++; });
   parts.under = 20 * under; parts.ns = 30 * ns;
   const kills = ITEMS.filter(i => i.debt && i.count != null && !i.income).map(debtOf).filter(d => d.dead).length;
   const klarnaKill = ITEMS.filter(i => i.debt && i.group === 'Klarna' && i.count != null).map(debtOf).some(d => d.dead);
@@ -953,8 +962,6 @@ function progress() {
   parts.kills = 150 * kills;
   let streak = 0;
   for (let d = addD(T, -1), i = 0; i < 3650 && ok(d); d = addD(d, -1), i++) streak++;
-  let best = 0, cur = 0;
-  Object.keys(DAYS.d).filter(d => d < T).sort().forEach((d, i, arr) => { cur = (i && diffD(arr[i - 1], d) === 1 && ok(arr[i - 1])) ? (ok(d) ? cur + 1 : 0) : (ok(d) ? 1 : 0); best = Math.max(best, cur); });
   const sideMonths = {};
   TXNS.forEach(t => { if (t.kind === 'inc') sideMonths[ym(t.date)] = (sideMonths[ym(t.date)] || 0) + (+t.eur || 0); });
   ITEMS.forEach(i => { if (i.income && i.freq === 'once' && MARKS.done[i.id + '@' + i.start]) sideMonths[ym(i.start)] = (sideMonths[ym(i.start)] || 0) + eurOf(i, i.amt); });
@@ -1056,10 +1063,11 @@ function evRow(o, opt = {}) {
   const cls = inc ? 'in' : it.debt ? 'debt' : 'out';
   const ico = inc ? 'coin' : it.debt ? 'skull' : 'sword';
   const name = it.group ? `${it.group} · ${it.name}` : it.name;
-  const meta = [opt.date ? fmtD(o.date) : '', acctName(o.acct), o.orig !== o.date ? `moved from ${fmtDs(o.orig)}` : '', opt.note ? it.note || '' : ''].filter(Boolean).join(' · ');
+  const meta = [opt.date ? fmtD(o.date) : '', acctName(o.acct), o.orig !== o.date ? `moved from ${fmtDs(o.orig)}` : '', opt.note ? it.note || '' : '', o.done && (MARKS.via || {})[o.key] ? 'seen at the bank' : ''].filter(Boolean).join(' · ');
+  const late = opt.late ? ` · <b class="${opt.late >= 3 ? 'bad' : ''}">${opt.late} day${opt.late > 1 ? 's' : ''} late</b>` : '';
   const amt = it.cur === 'USD' ? `${inc ? '+' : '−'}${usd(o.amt)}<small>≈ ${eur(Math.abs(o.v), 0)}</small>` : `${inc ? '+' : '−'}${eur(Math.abs(o.v))}`;
   const tick = opt.tick === false ? '<span class="nobtn"></span>' : `<button class="tick ${o.done ? 'on' : ''}" data-act="done" data-key="${esc(o.key)}" aria-label="${o.done ? 'Undo' : (inc ? 'Mark received' : 'Mark paid')}: ${esc(name)}" aria-pressed="${o.done}">${px('check')}</button>`;
-  return `<li class="ev ${cls} clickable ${o.done ? 'done' : ''} ${o.skip ? 'skipped' : ''}" data-act="occ" data-key="${esc(o.key)}" ${opt.back ? `data-back="${esc(opt.back)}"` : ''} tabindex="0"><span class="ev-ico">${it.debt && !inc ? monsterSVG(it.id, {size: 30, label: name}) : px(ico)}</span><span class="ev-main"><b>${esc(name)}</b><small>${esc(meta)}</small></span><span class="ev-amt">${amt}</span>${tick}</li>`;
+  return `<li class="ev ${cls} clickable ${o.done ? 'done' : ''} ${o.skip ? 'skipped' : ''}" data-act="occ" data-key="${esc(o.key)}" ${opt.back ? `data-back="${esc(opt.back)}"` : ''} tabindex="0"><span class="ev-ico">${it.debt && !inc ? monsterSVG(it.id, {size: 30, label: name}) : px(ico)}</span><span class="ev-main"><b>${esc(name)}</b><small>${esc(meta)}${late}</small></span><span class="ev-amt">${amt}</span>${tick}</li>`;
 }
 function txnRow(t, opt = {}) {
   const map = {exp: ['spend', 'bag', '−'], inc: ['in', 'coin', '+'], xfer: ['xfer', 'arrow', ''], pay: ['debt', 'sword', '−']};
@@ -1124,7 +1132,7 @@ function chartBlock(days, title) {
 /* ----- HQ ----- */
 function vHQ() {
   const needSync = !(S.syncs || []).length;
-  return `<div class="hq"><div class="col">${greet()}${bento(needSync)}${needSync ? startCard() : ''}${inboxBlock()}${comingUp()}</div>
+  return `<div class="hq"><div class="col">${liveAlert()}${greet()}${bento(needSync)}${needSync ? startCard() : ''}${waitingBlock()}${inboxBlock()}${comingUp()}</div>
     <div class="col">${questsBlock()}${sideQuest()}${chartBlock(M.proj.slice(0, M.H + 1), 'Next ' + Math.round(M.H / 7) + ' weeks')}</div></div>`;
 }
 function greet() {
@@ -1181,6 +1189,14 @@ function startCard() {
   return `<div class="pn startcard stack"><div class="lbl">Quest 1 · start here</div><h3>Tell me what's in your accounts</h3>
     <p>Open ${esc(listAnd(accts().map(a => a.name)))} and type in the balances. Everything else (your daily limit, the low points, the money moves) gets real once this is done.</p>
     <div><button class="btn gold" data-act="sync">${px('coin')} Enter balances · +25 XP</button></div></div>`;
+}
+function waitingBlock() {
+  const late = (M.waiting || []).filter(o => o.date < T);
+  if (!late.length) return '';
+  const many = late.length > 1;
+  return `<section class="sec"><div class="sec-h"><h2>Waiting for the bank</h2></div>
+    <p class="small muted">Due, but your bank hasn't shown ${many ? 'these' : 'it'} yet, so ${many ? "they're" : "it's"} still taken off your money. If one went out another way, tick it. If it moved, tap it to change the date or skip it.</p>
+    <ul class="evlist">${late.map(o => evRow(o, {date: true, late: diffD(o.date, T)})).join('')}</ul></section>`;
 }
 function inboxBlock() {
   if (!M.inbox.length) return '';
@@ -1301,10 +1317,19 @@ function vMap() {
 }
 
 /* ----- Bosses ----- */
+/** the limit a day is judged by: the snapshot taken when the app was open that day. On a day it stayed closed but the bank
+    covered (live sync ran after the day ended), the last snapshot before it, and the spending the bank logged */
+function dayLimit(d) {
+  const r = DAYS.d[d]; if (r) return r.t ?? r.a ?? 0;
+  const L = S.live || {};
+  if (!(L.since && d >= L.since && d < T && (L.lastAt || 0) > P(addD(d, 1)).getTime())) return null;
+  for (let k = 1; k <= 14; k++) { const p = DAYS.d[addD(d, -k)]; if (p) return p.t ?? p.a ?? 0; }
+  return null;
+}
 function dayOk(d) {
-  const r = DAYS.d[d]; if (!r) return null;
+  const lim = dayLimit(d); if (lim == null) return null;
   const sp = sum(TXNS.filter(t => t.kind === 'exp' && t.date === d).map(t => +t.eur || 0));
-  return sp <= (r.t ?? r.a ?? 0) + 0.005;
+  return sp <= lim + 0.005;
 }
 function weekGoal() {
   const dow = (P(T).getDay() + 6) % 7, mon = addD(T, -dow);
@@ -1811,6 +1836,8 @@ function guessAcct(a) {
   if (/wise/.test(n)) return ids.includes('wise') ? 'wise' : (byName ? byName.id : '');
   return byName ? byName.id : '';
 }
+/** a logged bank payment's id comes from the bank's own id, so writing it twice (after a sync was cut off) overwrites, never doubles */
+const bankId = ext => 'b_' + String(ext).replace(/[^A-Za-z0-9_-]/g, '_');
 async function applyFeed(accounts, txs, cursor, status, owners = []) {
   // money to or from your own name (or your company's) is you moving money, not spending or earning
   const ownWords = owners.map(o => norm(o).split(/[^a-z0-9]+/).filter(w => w.length >= 4)).filter(ws => ws.length);
@@ -1827,7 +1854,9 @@ async function applyFeed(accounts, txs, cursor, status, owners = []) {
     const last = (S.syncs || []).slice(-1)[0];
     if (!last || last.d !== T) sPatch.syncs = (S.syncs || []).slice(-90).concat({d: T, total: r2(sum(Object.values(Object.assign({}, S.balances || {}, sPatch.balances))))});
   }
-  const seen = LIVE.seen || {}, seenPatch = {}, marks = {done: {}, ov: {}}, ops = [], claimed = new Set();
+  const seen = LIVE.seen || {}, seenPatch = {}, marks = {done: {}, ov: {}, via: {}}, ops = [], claimed = new Set();
+  // a bill ticked by a payment whose "seen" note never got saved: the receipt says it's already handled
+  const viaExt = new Map(Object.entries(MARKS.via || {}).filter(([, v]) => v && v.ext).map(([k, v]) => [v.ext, k]));
   const since = S.live.since || T, out = {matched: 0, logged: 0, moved: 0, updated: 0, names: []};
   const dayOf = t => t.booked_at ? isoOf(new Date(t.booked_at)) : T;
   const fresh = txs.filter(t => map[t.account_id] && !seen[t.id]).sort((x, y) => (x.booked_at || '') < (y.booked_at || '') ? -1 : 1);
@@ -1845,17 +1874,18 @@ async function applyFeed(accounts, txs, cursor, status, owners = []) {
     if (prev) {
       if (prev.sig === sig) continue;
       if (prev.t === 'txn') ops.push(dead ? store.del('txns/' + prev.ref) : store.update('txns/' + prev.ref, {eur: r2(eurV), orig: r2(t.currency === 'USD' && t.amount_cents > 0 ? Math.abs(t.amount_cents) / 100 : eurV), pending: t.status === 'pending' ? true : null}));
-      if (prev.t === 'occ' && dead) marks.done[prev.ref] = null;
+      if (prev.t === 'occ' && dead) { marks.done[prev.ref] = null; marks.via[prev.ref] = null; }
       seenPatch[t.id] = Object.assign({}, prev, {sig}); out.updated++;
       continue;
     }
+    if (viaExt.has(t.id)) { seenPatch[t.id] = {t: 'occ', ref: viaExt.get(t.id), sig}; continue; }
     if (dead || t.kind === 'conversion' || eurV == null) { seenPatch[t.id] = {t: 'skip', sig}; continue; }
     if (!pair.has(t.id) && t.kind !== 'card' && ((t.kind === 'funding' && t.amount_cents > 0) || ownMoney(t))) { seenPatch[t.id] = {t: 'own', sig}; continue; }
     if (pair.has(t.id)) {
       if (t.amount_cents > 0) continue;
       const o = txs.find(x => x.id === pair.get(t.id));
       if (date >= since) {
-        const id = uid();
+        const id = bankId(t.id);
         ops.push(store.set('txns/' + id, {kind: 'xfer', date, eur: r2(eurV), orig: r2(eurV), cur: 'EUR', acct: app, to: map[o.account_id], src: 'live', ext: t.id, at: now}));
         seenPatch[t.id] = {t: 'txn', ref: id, sig}; out.moved++;
       } else seenPatch[t.id] = {t: 'skip', sig};
@@ -1863,34 +1893,58 @@ async function applyFeed(accounts, txs, cursor, status, owners = []) {
       continue;
     }
     // a scheduled bill or income: same direction, ±4 days, the name on the statement or the exact amount
-    let best = null, bestScore = 0;
+    let best = null, bestScore = 0, bestNamed = false;
     for (const o of occ(addD(date, -4), addD(date, 4))) {
       if (o.done || claimed.has(o.key) || (t.amount_cents < 0) !== (o.v < 0)) continue;
       const want = Math.abs(o.v), off = Math.abs(eurV - want) / Math.max(want, 1), named = matchName(o.it, t.counterparty + ' ' + t.description);
       if (!named && (off > 0.02 || o.acct !== app)) continue;
       const score = (named ? 3 : 0) + (off <= 0.02 ? 3 : off <= 0.25 ? 1.5 : 0) + (o.acct === app ? 1 : 0) - Math.abs(diffD(o.date, date)) * 0.3;
-      if (score > bestScore) { bestScore = score; best = o; }
+      if (score > bestScore) { bestScore = score; best = o; bestNamed = named; }
     }
     if (best && bestScore >= 3) {
       claimed.add(best.key);
       marks.done[best.key] = now;
       const orig = best.it.cur === t.currency ? Math.abs(t.amount_cents) / 100 : best.it.cur === 'EUR' ? eurV : null;
       if (orig != null && Math.abs(orig - best.amt) > 0.004) marks.ov[best.key] = {amt: r2(orig)};
+      marks.via[best.key] = {ext: t.id, name: String(t.counterparty || t.description || '').slice(0, 80), eur: r2(eurV), dir: t.amount_cents < 0 ? -1 : 1, date, acct: app, by: bestNamed ? 'name' : 'amount', at: now};
       seenPatch[t.id] = {t: 'occ', ref: best.key, sig}; out.matched++; out.names.push(best.it.name);
       continue;
     }
     if (date < since) { seenPatch[t.id] = {t: 'skip', sig}; continue; }
-    const id = uid(), note = t.counterparty || t.description || (t.amount_cents < 0 ? 'Card payment' : 'Money in');
+    const id = bankId(t.id), note = t.counterparty || t.description || (t.amount_cents < 0 ? 'Card payment' : 'Money in');
     if (t.amount_cents < 0) ops.push(store.set('txns/' + id, {kind: 'exp', date, eur: r2(eurV), orig: r2(eurV), cur: 'EUR', acct: app, cat: guessCat(t), note, src: 'live', ext: t.id, pending: t.status === 'pending' ? true : null, at: now}));
     else ops.push(store.set('txns/' + id, {kind: 'inc', date, eur: r2(eurV), orig: r2(t.currency === 'USD' ? Math.abs(t.amount_cents) / 100 : eurV), cur: t.currency === 'USD' ? 'USD' : 'EUR', acct: app, src: 'live', note: guessSrc(t) === 'Other' ? note : `${guessSrc(t)} · ${note}`, ext: t.id, at: now}));
     seenPatch[t.id] = {t: 'txn', ref: id, sig}; out.logged++; out.names.push(note);
   }
-  if (Object.keys(marks.done).length || Object.keys(marks.ov).length) ops.push(store.update('fin/marks', marks));
+  if (Object.keys(marks.done).length || Object.keys(marks.ov).length || Object.keys(marks.via).length) ops.push(store.update('fin/marks', marks));
   if (Object.keys(seenPatch).length) ops.push(store.update('fin/live', {seen: seenPatch}));
   ops.push(store.update('fin/settings', sPatch));
   await Promise.all(ops);
   out.errors = Object.entries(status || {}).filter(([, s]) => s && s.ok === false).map(([k, s]) => `${k}: ${s.error}`);
   return out;
+}
+/** "Not this bill": untick it, and log the bank payment as ordinary spending (or income) instead */
+function unmatchBill(key) {
+  const v = (MARKS.via || {})[key]; if (!v) return Promise.resolve(null);
+  const id = bankId(v.ext), prev = LIVE.seen[v.ext] || {}, at = Date.now(), note = v.name || (v.dir > 0 ? 'Money in' : 'Card payment');
+  const t = v.dir > 0 ? {kind: 'inc', date: v.date, eur: v.eur, orig: v.eur, cur: 'EUR', acct: v.acct, src: 'live', note, ext: v.ext, at}
+    : {kind: 'exp', date: v.date, eur: v.eur, orig: v.eur, cur: 'EUR', acct: v.acct, cat: guessCat({counterparty: v.name || '', description: ''}), note, src: 'live', ext: v.ext, at};
+  return Promise.all([
+    store.set('txns/' + id, t),
+    store.update('fin/marks', {done: {[key]: null}, via: {[key]: null}}),
+    store.update('fin/live', {seen: {[v.ext]: {t: 'txn', ref: id, sig: prev.sig || ''}}}),
+  ]).then(() => id);
+}
+/** a red box on Home when a bank keeps failing, or the sync service can't be reached */
+function liveAlert() {
+  if (!liveOn()) return '';
+  const L = S.live || {}, names = {qonto: 'Qonto', wise: 'Wise', wise2: 'Wise (second login)', paypal: 'PayPal', mock: 'The demo bank'};
+  const bad = Object.entries(L.status || {}).filter(([, s]) => s && s.ok === false && (s.fails == null || s.fails >= 2));
+  const gone = liveErr && Date.now() - (L.lastAt || 0) > 30 * 60000;
+  if (!bad.length && !gone) return '';
+  const lines = bad.map(([k, s]) => `<b>${esc(names[k] || k)}</b> hasn't synced${s.lastOk ? ' since ' + esc(whenIso(s.lastOk)) : ''}: ${esc(String(s.error || 'unknown error').slice(0, 140))}`);
+  if (gone) lines.unshift(`<b>Your sync service</b> can't be reached: ${esc(liveErr)}. Last update ${esc(liveAgo())}.`);
+  return `<div class="alertbox" role="alert"><span>${lines.join('<br>')}<br><small class="muted">Until it works again, balances and bills from ${lines.length > 1 ? 'these' : 'there'} can be out of date.</small></span><button class="btn sm" data-act="settings">Check</button></div>`;
 }
 function liveToast(r, quiet) {
   if (!r) { if (!quiet) toast(`Live sync failed: ${esc(liveErr || 'unknown error')}`, 'bad'); return; }
@@ -2150,6 +2204,7 @@ function openOcc(key, back) {
   openSheet(sheetHead(esc(debtName(it))) + `<form class="form" data-form="occ" data-key="${esc(key)}">
     ${back ? `<div><button type="button" class="btn ghost" data-act="day" data-date="${esc(back)}">‹ ${fmtD(back)}</button></div>` : ''}
     <p class="hint">${esc(when)} · ${esc(acctName(it.acct))} · usually ${money(o.base)}${o.orig !== o.date ? ` · moved from ${fmtD(o.orig)}` : ''}${o.skip ? ' · <b>skipped</b>' : ''}</p>
+    ${o.done && (MARKS.via || {})[key] ? (v => `<div class="hint receipt"><span>${px('check')} <b>Your bank showed it:</b> ${esc(v.name || 'a payment')} · ${eur(v.eur)} · ${esc(acctName(v.acct))} · ${fmtD(v.date)}. Matched by ${v.by === 'name' ? 'the name on the statement' : 'the exact amount'}.</span><div><button type="button" class="btn sm" data-act="unmatch" data-key="${esc(key)}">Not this ${inc ? 'income' : 'bill'}</button></div></div>`)(MARKS.via[key]) : ''}
     <div class="two"><label class="fld" for="o-amt"><span>Amount this time (${it.cur === 'USD' ? '$' : '€'})</span><input type="text" class="amt" id="o-amt" name="amt" inputmode="decimal" autocomplete="off" value="${r2(o.amt)}" autofocus></label>
     <label class="fld" for="o-date"><span>Date</span><input type="date" id="o-date" name="date" value="${o.date}"></label></div>
     <label class="check"><input type="checkbox" name="done" id="o-done" ${o.done ? 'checked' : ''}> ${inc ? 'The money arrived' : 'Already paid'}${o.done ? '' : ' · +10 XP'}</label>
@@ -2436,6 +2491,7 @@ const ACTIONS = {
   level: () => openLevel(),
   hydrafrom: b => openHydraFrom(b.dataset.group),
   livesync: b => { b.disabled = true; b.textContent = 'Syncing…'; liveSync(true).then(r => { closeSheet(); liveToast(r); }); },
+  unmatch: b => { unmatchBill(b.dataset.key).then(() => { closeSheet(); toast('Unticked. That bank payment is logged on its own now.'); }); },
   cloudnow: b => {
     b.disabled = true; b.textContent = 'Backing up…';
     cloudUpload(false).then(r => { b.disabled = false; b.textContent = 'Back up now'; const st = $('#cb-status'); if (st) st.innerHTML = cloudStatus(); if (r) toast(r.same ? 'Already backed up' : 'Backed up'); else if (cloudErr) toast('Backup failed: ' + esc(cloudErr), 'bad'); });
@@ -2784,7 +2840,7 @@ async function boot() {
 function attach() {
   const err = e => { console.warn('db', e); if (e && e.code === 'revoked') locked = true; Object.keys(got).forEach(k => { got[k] = true; }); scheduleRender(); };
   store.watchDoc('fin/settings', d => { S = d; got.s = true; scheduleRender(); }, err);
-  store.watchDoc('fin/marks', d => { MARKS = {done: (d && d.done) || {}, ov: (d && d.ov) || {}}; got.m = true; scheduleRender(); }, err);
+  store.watchDoc('fin/marks', d => { MARKS = {done: (d && d.done) || {}, ov: (d && d.ov) || {}, via: (d && d.via) || {}}; got.m = true; scheduleRender(); }, err);
   store.watchDoc('fin/days', d => { DAYS = {d: (d && d.d) || {}}; got.d = true; scheduleRender(); }, err);
   store.watchColl('items', list => { ITEMS = list; got.i = true; scheduleRender(); }, err);
   store.watchColl('txns', list => { TXNS = list; got.t = true; scheduleRender(); }, err);
@@ -2798,7 +2854,7 @@ const API = {
   setToday: d => { T = d; },
   useLocalStore: () => { store = localStore(); attach(); return store; },
   compute, occ, rawOcc, project, monthStats, debtOf, bosses, simulate, progress, unlocks,
-  matchName, guessCat, guessSrc, applyFeed, num, exportAll, importAll,
+  matchName, guessCat, guessSrc, applyFeed, num, exportAll, importAll, unmatchBill, bankId, dayLimit, dayOk, liveAlert, setLiveErr: e => { liveErr = e; },
   cloud: {seal, unseal, newLockKey, keyForEnvelope, boardHash, upload: cloudUpload, check: cloudCheck, load: cloudLoad, conf: cloudConf, device,
     state: () => ({cloudErr, cloudPending, cloudDirtyAt, cloudTimer: !!cloudTimer}), store: () => store},
 };
