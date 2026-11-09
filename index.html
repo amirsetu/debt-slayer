@@ -1209,7 +1209,7 @@ function bento(needSync) {
     <a class="bx debt wide" href="#bosses" data-act="nav" data-view="bosses">
       <svg class="ring" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="${Math.round(beat * 100)}% of your debt beaten"><circle cx="32" cy="32" r="24" fill="var(--panel)" stroke="var(--rule)" stroke-width="10"/>${beat > 0.004 ? `<circle cx="32" cy="32" r="24" fill="none" stroke="var(--ink)" stroke-width="10" stroke-linecap="round" stroke-dasharray="${(beat * C).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 32 32)"/>` : ''}<text x="32" y="37" text-anchor="middle">${Math.round(beat * 100)}%</text></svg>
       <span class="grow"><span class="lbl">Debt-free</span><span class="val">${base.finish ? fmtM(base.finish) : 'Reveal every boss'}</span><span class="sub">${eur(rem, 0)} left${base.order[0] ? ' · next boss ' + esc(base.order[0].name) : ''}</span></span></a>
-    <button class="bx money" data-act="sync"><span class="lbl">Money now</span><span class="val">${eur(M.now, 0)}</span><span class="sub">${S.live && S.live.url && S.live.lastAt ? `${liveErr ? 'Live sync failed' : 'Live'} · ${liveAgo()}` : (last ? 'Checked ' + rel(last.d) : 'Not entered yet') + ' · tap to update'}</span></button>
+    <button class="bx money" data-act="sync"><span class="lbl">Money now</span><span class="val">${eur(M.now, 0)}</span><span class="sub">${S.live && S.live.url && S.live.lastAt ? `${liveErr ? 'Live sync failed' : 'Live'} · ${liveAgo()} · tap to sync` : (last ? 'Checked ' + rel(last.d) : 'Not entered yet') + ' · tap to update'}</span></button>
     <section class="bx payday"><span class="lbl">Payday</span>${pay ? `<span class="val">${pay.it.cur === 'USD' ? usd(pay.amt) : eur(pay.amt, 0)}</span><span class="sub">${rel(pay.date)} · ${fmtDs(pay.date)}</span>` : '<span class="val">—</span><span class="sub">No income planned</span>'}</section>
     <button class="bx level wide" data-act="level"><span class="avatar">${px(S.avatar || 'sword')}</span><span class="grow"><span class="lbl">Level ${PR.lvl} · ${PR.xp.toLocaleString('en')} XP</span><span class="val" style="font-size:20px">${esc(PR.title)}</span><span class="hp sm gold"><i style="width:${lvPct.toFixed(1)}%"></i></span><span class="sub">${PR.next - PR.xp} XP to level ${PR.lvl + 1} · rewards ›</span></span></button>
   </div>`;
@@ -1674,7 +1674,11 @@ function fail(msg) { const e = $('#f-err'); if (e) { e.textContent = msg; e.hidd
 
 function openSync() {
   openSheet(sheetHead('What do you have right now?') + `<form class="form" data-form="sync">
-    <p class="hint">Open each app and type the balance in euros. For Wise, use the total it shows in EUR. Bills due today count as already gone.</p>
+    ${liveOn() ? `<div class="penny-say">${penny(34)}<span>Connected banks update by themselves. Last sync <b>${liveAgo()}</b>${liveErr ? ` · <span class="bad">${esc(liveErr)}</span>` : ''}.</span></div>
+    <button type="button" class="btn gold wide" data-act="livesync">Sync from my banks now</button>
+    <p class="hint">Type the ones that aren't connected below, like Sparkasse.</p>`
+      : `${store && store.kind === 'local' ? `<div><button type="button" class="btn sm" data-act="settings">Connect your banks so this updates by itself ›</button></div>` : ''}
+    <p class="hint">Open each app and type the balance in euros. For Wise, use the total it shows in EUR. Bills due today count as already gone.</p>`}
     ${accts().map(a => isLiveAcct(a.id)
       ? `<label class="fld" for="b-${esc(a.id)}"><span>${esc(a.name)} · live</span><input type="text" id="b-${esc(a.id)}" value="${r2(M ? (M.bal[a.id] || 0) : 0)}" disabled><small>Updated from your bank</small></label>`
       : `<label class="fld" for="b-${esc(a.id)}"><span>${esc(a.name)}</span><input type="text" id="b-${esc(a.id)}" name="b_${esc(a.id)}" inputmode="decimal" autocomplete="off" value="${r2(M ? (M.bal[a.id] || 0) : 0)}"></label>`).join('')}
