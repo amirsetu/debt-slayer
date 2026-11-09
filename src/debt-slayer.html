@@ -1049,6 +1049,7 @@ function afterRender() {
   if (PR.lvl > Math.max(+S.seenLvl || 1, lvlShown)) { if ($('#sheet').hidden) openLevelUp(); else pendingLvl = true; }
   if (!fxTried) { fxTried = true; refreshFx(false); }
   if (!pushChecked) { pushChecked = true; pushRefresh(); }
+  hello();
   planLater();
   if (!liveTried && liveOn()) { liveTried = true; liveSync(Date.now() - (S.live.lastAt || 0) > 3 * 60000).then(r => liveToast(r, true)); }
   if (prevKills != null && PR.kills > prevKills) { toast('Boss down! A debt is fully paid.', 'big'); confetti(); }
@@ -2177,6 +2178,16 @@ async function checkUpdate() {
     setTimeout(() => location.reload(), 700);
   } catch (e) {}
 }
+/* each open, the app tells your sync service which version it runs and whether this device can get notifications,
+   so a problem on the phone can be looked into without the phone in hand */
+let helloAt = 0;
+function hello() {
+  if (!liveOn() || Date.now() - helloAt < 10 * 60000) return;
+  helloAt = Date.now();
+  const standalone = !!(navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches));
+  const push = !pushCan() ? 'unsupported' : Notification.permission;
+  cloudFetch('/v1/hello', {method: 'POST', body: {device: device().label, id: device().id.slice(0, 8), version: BUILD, standalone, push, signedUp: !!pushConf(), cloud: cloudOn(), sw: !!(navigator.serviceWorker && navigator.serviceWorker.controller)}}).catch(() => {});
+}
 const PUSH_KEY = 'debtslayer.push';
 let planSent = '', planTimer = null, pushChecked = false;
 const pushConf = () => readJSON(PUSH_KEY);
@@ -2956,6 +2967,7 @@ function owedPreview() {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { if (cloudDirtyAt && cloudOn()) cloudUpload(false); return; }
   checkUpdate();
+  if (S) hello();
   if (cloudOn() && !cloudGate && Date.now() - cloudLastCheck > 60000) cloudGate = cloudCheck().finally(() => { cloudGate = null; });
   if (isoOf(new Date()) !== T) scheduleRender();
   if (liveOn() && Date.now() - (S.live.lastAt || 0) > 3 * 60000) liveSync(true).then(r => liveToast(r, true));
