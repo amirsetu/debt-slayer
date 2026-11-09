@@ -1,3 +1,7 @@
 # never commit personal data
 *backup*.json
+seed*.json
+# local QA copy (tools/qa.py)
+qa/
+node_modules/
 .DS_Store

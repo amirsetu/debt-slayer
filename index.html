@@ -662,6 +662,7 @@ let fxTried = false, fxErr = null, pendingLvl = false, lvlShown = 0, searchQ = '
 let LIVE = {seen: {}}, liveBusy = false, liveErr = null, liveTried = false;
 const missDone = new Set();
 let prevLevel = null, prevKills = null, wroteDay = null, renderQueued = false, LOGCTX = {};
+let headless = false; // set by the test harness: no page to draw on
 const allGot = () => got.s && got.i && got.t && got.m && got.d;
 const accts = () => (S && S.accounts && S.accounts.length) ? S.accounts : DEFAULT_ACCTS;
 const acctName = id => (accts().find(a => a.id === id) || {name: id || '—'}).name;
@@ -1040,6 +1041,7 @@ applyTheme();
 if (darkMQ && darkMQ.addEventListener) darkMQ.addEventListener('change', applyTheme);
 
 function render() {
+  if (headless) return;
   const main = $('#main');
   const navBtn = ([id, label, ico]) => `<button data-act="nav" data-view="${id}" ${view === id ? 'aria-current="page"' : ''}>${px(ico)}<span>${label}</span></button>`;
   $('#tabs').innerHTML = VIEWS.slice(0, 2).map(navBtn).join('') + `<button class="navlog" data-act="log" data-tab="spend">${px('plus')}<span>Log</span></button>` + VIEWS.slice(2).map(navBtn).join('');
@@ -2250,6 +2252,7 @@ function confetti() {
   document.body.appendChild(box); setTimeout(() => box.remove(), 2400);
 }
 function toast(msg, kind = '') {
+  if (headless) return;
   const el = document.createElement('div'); el.className = 'toast ' + kind; el.innerHTML = msg;
   $('#toasts').appendChild(el);
   setTimeout(() => el.classList.add('out'), kind === 'big' ? 3200 : 2400);
@@ -2575,6 +2578,11 @@ async function boot() {
     try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
     if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(e => console.warn('sw', e));
   }
+  attach();
+  setTimeout(() => { if (!allGot()) { slow = true; scheduleRender(); } }, 10000);
+}
+/* keep the in-memory board in step with the store */
+function attach() {
   const err = e => { console.warn('db', e); if (e && e.code === 'revoked') locked = true; Object.keys(got).forEach(k => { got[k] = true; }); scheduleRender(); };
   store.watchDoc('fin/settings', d => { S = d; got.s = true; scheduleRender(); }, err);
   store.watchDoc('fin/marks', d => { MARKS = {done: (d && d.done) || {}, ov: (d && d.ov) || {}}; got.m = true; scheduleRender(); }, err);
@@ -2582,9 +2590,18 @@ async function boot() {
   store.watchColl('items', list => { ITEMS = list; got.i = true; scheduleRender(); }, err);
   store.watchColl('txns', list => { TXNS = list; got.t = true; scheduleRender(); }, err);
   store.watchDoc('fin/live', d => { LIVE = {seen: (d && d.seen) || {}}; }, err);
-  setTimeout(() => { if (!allGot()) { slow = true; scheduleRender(); } }, 10000);
 }
-boot();
+
+/* ---------- tests and QA: test/harness.js runs this file with no page and drives the engine through API ---------- */
+const API = {
+  state: () => ({S, ITEMS, TXNS, MARKS, DAYS, LIVE, T, M}),
+  setToday: d => { T = d; },
+  useLocalStore: () => { store = localStore(); attach(); return store; },
+  compute, occ, rawOcc, project, monthStats, debtOf, bosses, simulate, progress, unlocks,
+  matchName, guessCat, guessSrc, applyFeed, num, exportAll, importAll,
+};
+if (window.__dsTest) { headless = true; window.__dsTest(API); }
+else { if (window.__dsQA) window.__qa = API; boot(); }
 })();
 </script>
 

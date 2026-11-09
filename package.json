@@ -1,0 +1,13 @@
+{
+  "name": "debt-slayer",
+  "private": true,
+  "type": "module",
+  "description": "Debt Slayer phone app. One source file, a build script, and tests that run the real engine in Node.",
+  "scripts": {
+    "build": "python3 tools/build.py",
+    "check": "python3 tools/build.py --check",
+    "test": "node --test test/*.test.js",
+    "qa": "python3 tools/build.py && python3 tools/qa.py && python3 -m http.server 8766 -d qa"
+  },
+  "engines": { "node": ">=20" }
+}
