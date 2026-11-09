@@ -1428,7 +1428,7 @@ function bossCard(b) {
     <div class="hpnum"><span>HP <b>${eur(b.rem, 0)}</b></span><span class="muted">of ${eur(b.full, 0)}</span></div>
     <div class="bossmeta"><span>Hits for<b>${eur(b.monthly, 0)}/mo</b></span><span>Next hit<b>${next ? fmtDs(next) : '—'}</b></span><span>Falls<b>${b.last ? fmtMs(ym(b.last)) : '—'}</b></span></div>
     ${heads}
-    ${b.dead ? '' : `<div class="row">${b.grouped ? `<button class="btn sm gold" data-act="strike" data-group="${esc(b.id)}">${px('sword')} Strike a head</button>` : `<button class="btn sm gold" data-act="strike" data-id="${esc(one.it.id)}">${px('sword')} Strike</button><button class="btn sm" data-act="item" data-id="${esc(one.it.id)}">Edit</button>`}</div>`}
+    ${b.dead ? '' : `<div class="row">${b.grouped ? `<button class="btn sm gold" data-act="strike" data-group="${esc(b.id)}">${px('sword')} Strike a head</button><button class="btn sm" data-act="hydrafrom" data-group="${esc(b.id)}">Paid from ${esc(acctName(b.heads[0].it.acct))}</button>` : `<button class="btn sm gold" data-act="strike" data-id="${esc(one.it.id)}">${px('sword')} Strike</button><button class="btn sm" data-act="item" data-id="${esc(one.it.id)}">Edit</button>`}</div>`}
     ${b.dead && !b.grouped ? `<div><button class="btn sm" data-act="item" data-id="${esc(one.it.id)}">Edit</button></div>` : ''}
   </article>`;
 }
@@ -1801,7 +1801,7 @@ async function liveSync(pull) {
     if (pull) await liveFetch('/v1/sync', 'POST');
     let cursor = S.live.cursor || 0, feed, txs = [];
     for (let i = 0; i < 10; i++) { feed = await liveFetch('/v1/feed?since=' + cursor); txs = txs.concat(feed.transactions || []); cursor = feed.cursor; if (!feed.more) break; }
-    const res = await applyFeed(feed.accounts || [], txs, cursor, feed.status || {});
+    const res = await applyFeed(feed.accounts || [], txs, cursor, feed.status || {}, feed.owners || []);
     liveErr = null;
     return res;
   } catch (e) { liveErr = (e && e.message) || String(e); console.warn('live', e); return null; }
@@ -1818,7 +1818,7 @@ function matchName(it, text) {
 }
 const CAT_WORDS = [
   ['Groceries', ['rewe', 'lidl', 'aldi', 'edeka', 'netto', 'penny', 'kaufland', 'rossmann', 'dm-drogerie', 'dm drogerie', 'denns', 'bio company']],
-  ['Food & dinner', ['restaurant', 'cafe', 'coffee', 'starbucks', 'lieferando', 'wolt', 'uber eats', 'mcdonald', 'burger', 'pizza', 'sushi', 'bakery', 'backerei', 'baeckerei', 'kebab', 'doner']],
+  ['Food & dinner', ['restaurant', 'cafe', 'coffee', 'starbucks', 'lieferando', 'wolt', 'uber eats', 'mcdonald', 'burger', 'pizza', 'sushi', 'bakery', 'backerei', 'baeckerei', 'kebab', 'kebap', 'doner']],
   ['Transport', ['deutsche bahn', 'db vertrieb', 'bvg', 'mvg', 'hvv', 'uber', 'bolt', 'freenow', 'free now', 'tier', 'lime', 'shell', 'aral', 'esso', 'total', 'tankstelle', 'flixbus']],
   ['Shopping', ['amazon', 'amzn', 'zalando', 'ikea', 'h&m', 'uniqlo', 'apple.com', 'mediamarkt', 'saturn', 'ebay', 'etsy']],
   ['Fun', ['netflix', 'spotify', 'kino', 'cinema', 'steam', 'playstation', 'xbox', 'ticket']],
@@ -1841,7 +1841,10 @@ function guessAcct(a) {
   if (/wise/.test(n)) return ids.includes('wise') ? 'wise' : (byName ? byName.id : '');
   return byName ? byName.id : '';
 }
-async function applyFeed(accounts, txs, cursor, status) {
+async function applyFeed(accounts, txs, cursor, status, owners = []) {
+  // money to or from your own name (or your company's) is you moving money, not spending or earning
+  const ownWords = owners.map(o => norm(o).split(/[^a-z0-9]+/).filter(w => w.length >= 4)).filter(ws => ws.length);
+  const ownMoney = t => { const hay = norm(t.counterparty + ' ' + t.description); return ownWords.some(ws => ws.filter(w => hay.includes(w)).length >= Math.min(2, ws.length)); };
   const now = Date.now(), map = Object.assign({}, S.live.map || {}), names = {};
   accounts.forEach(a => { names[a.id] = a.name; if (!(a.id in map)) map[a.id] = guessAcct(a); });
   const toEur = (cents, cur) => cur === 'EUR' ? cents / 100 : cur === 'USD' ? cents / 100 * rate() : null;
@@ -1877,6 +1880,7 @@ async function applyFeed(accounts, txs, cursor, status) {
       continue;
     }
     if (dead || t.kind === 'conversion' || eurV == null) { seenPatch[t.id] = {t: 'skip', sig}; continue; }
+    if (!pair.has(t.id) && t.kind !== 'card' && ((t.kind === 'funding' && t.amount_cents > 0) || ownMoney(t))) { seenPatch[t.id] = {t: 'own', sig}; continue; }
     if (pair.has(t.id)) {
       if (t.amount_cents > 0) continue;
       const o = txs.find(x => x.id === pair.get(t.id));
@@ -2074,6 +2078,14 @@ function openStrike(id, preset = {}) {
   strikePreview();
 }
 
+function openHydraFrom(group) {
+  const heads = ITEMS.filter(i => i.group === group && !i.income);
+  openSheet(sheetHead(`Where ${esc(group)} takes its money`) + `<form class="form" data-form="hydrafrom" data-group="${esc(group)}">
+    <p class="hint">${esc(group)} can't be connected, but it takes each payment from the card or account you chose in the ${esc(group)} app. Pick that one here. All ${heads.length} plans move to it, and once that account is connected, each ${esc(group)} payment ticks itself off when it leaves.</p>
+    <fieldset class="fld"><legend>${esc(group)} takes payments from</legend>${acctChips('acct', (heads[0] || {}).acct || 'klarna')}</fieldset>
+    <button class="btn gold wide">Save</button></form>`);
+}
+
 /* ----- one boss up close ----- */
 function openBoss(id) {
   const it = ITEMS.find(i => i.id === id); if (!it) return;
@@ -2265,6 +2277,7 @@ const ACTIONS = {
     : save(store.update('fin/days', {d: {[T]: {a: r2(M.allow), t: r2(M.target), ns: true}}}), 'No-spend day locked in. Hold it and earn <b>+30 XP</b> tomorrow.'),
   occ: b => openOcc(b.dataset.key, b.dataset.back),
   level: () => openLevel(),
+  hydrafrom: b => openHydraFrom(b.dataset.group),
   livesync: b => { b.disabled = true; b.textContent = 'Syncing…'; liveSync(true).then(r => { closeSheet(); liveToast(r); }); },
   liveoff: () => { try { localStorage.removeItem(LIVE_KEY); } catch (e) {} liveErr = null; closeSheet(); toast('This device is disconnected. Your bank data stays on your sync service.'); scheduleRender(); },
   boss: b => openBoss(b.dataset.id),
@@ -2326,6 +2339,10 @@ const ACTIONS = {
   },
 };
 const FORMS = {
+  hydrafrom(f, fd) {
+    const acct = fd.get('acct'), group = f.dataset.group, heads = ITEMS.filter(i => i.group === group && !i.income);
+    save(Promise.all(heads.map(i => store.update('items/' + i.id, {acct}))), `${heads.length} ${esc(group)} plans now paid from ${esc(acctName(acct))}`).then(closeSheet);
+  },
   async live(f, fd) {
     const er = m => { const e = $('#lv-err'); if (e) { e.textContent = m; e.hidden = false; } };
     const url = String(fd.get('url') || '').trim().replace(/\/+$/, ''), key = String(fd.get('key') || '').trim();
