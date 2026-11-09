@@ -427,7 +427,7 @@ input[type=range]{width:100%;accent-color:var(--gold)}
 .fld>span,.fld>legend{font:800 11px/1.2 var(--f-ui);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:0;margin-bottom:6px}
 .fld>span{margin-bottom:0}
 .fld small{color:var(--muted);font-size:12px;font-weight:600}
-.form input[type=text],.form input[type=search],.form input[type=date],.form input[type=number],.form select,#sim-target,.form textarea{font:700 16px/1.2 var(--f-ui);color:var(--ink);background:var(--panel-2);border:2px solid var(--edge);border-radius:14px;padding:12px 13px;width:100%;min-width:0}
+.form input[type=text],.form input[type=password],.form input[type=search],.form input[type=date],.form input[type=number],.form select,#sim-target,.form textarea{font:700 16px/1.2 var(--f-ui);color:var(--ink);background:var(--panel-2);border:2px solid var(--edge);border-radius:14px;padding:12px 13px;width:100%;min-width:0}
 .form input:focus,.form select:focus,#sim-target:focus,.form textarea:focus{outline:3px solid var(--gold-soft);outline-offset:0;border-color:var(--gold)}
 .form textarea{font:500 12px/1.4 ui-monospace,Menlo,monospace;min-height:120px;resize:vertical}
 .form input.amt{font:800 30px/1 var(--f-num);padding:12px;letter-spacing:-.01em}
@@ -486,6 +486,7 @@ details.more .stack{margin-top:6px}
 .nudge{display:flex;align-items:center;gap:12px;justify-content:space-between;flex-wrap:wrap;border:2px dashed var(--edge);border-radius:var(--r);padding:12px 14px;background:var(--panel-2);font-size:14px}
 html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 button,a,label{-webkit-tap-highlight-color:transparent}
+.btn.ghost.danger{color:var(--hit)}
 </style>
 </head>
 <body>
@@ -658,6 +659,7 @@ const got = {s: false, i: false, t: false, m: false, d: false};
 let store = null, locked = false, slow = false, M = null, PR = null;
 let view = 'hq', mapMonth = null, logMonth = null, billFilter = 'all', simExtra = 100, simMode = 'month', simTarget = '', simRoll = true, inboxAll = false;
 let fxTried = false, fxErr = null, pendingLvl = false, lvlShown = 0, searchQ = '';
+let LIVE = {seen: {}}, liveBusy = false, liveErr = null, liveTried = false;
 const missDone = new Set();
 let prevLevel = null, prevKills = null, wroteDay = null, renderQueued = false, LOGCTX = {};
 const allGot = () => got.s && got.i && got.t && got.m && got.d;
@@ -798,7 +800,11 @@ function tEff(t) {
   if (t.kind === 'xfer') return [[t.acct, -v], [t.to, v]];
   return [];
 }
-const tCounts = t => t.date > S.syncDate || (t.date === S.syncDate && (t.at || 0) > (S.syncAt || 0));
+const syncOf = a => (S.acctSync && S.acctSync[a]) || {d: S.syncDate || T, at: S.syncAt || 0};
+const counts = (t, a) => { const s = syncOf(a); return t.date > s.d || (t.date === s.d && (t.at || 0) > (s.at || 0)); };
+const tCounts = t => counts(t, t.acct);
+const isLiveAcct = a => !!(S && S.live && S.live.url && Object.values(S.live.map || {}).includes(a));
+const liveToday = a => { const s = S.acctSync && S.acctSync[a]; return !!(s && s.live && s.d === T); };
 
 function project(fromBal, end) {
   const ev = new Map();
@@ -821,10 +827,12 @@ function compute() {
   const R = {};
   const bal = {};
   accts().forEach(a => { bal[a.id] = +((S.balances || {})[a.id] || 0); });
-  const sd = S.syncDate || T;
-  const past = sd < T ? occ(addD(sd, 1), T) : [];
+  const early = accts().map(a => syncOf(a.id).d).concat(S.syncDate || T).reduce((m, d) => d < m ? d : m, T);
+  const past = early < T ? occ(addD(early, 1), T).filter(o => o.date > syncOf(o.acct).d) : [];
   past.forEach(o => { bal[o.acct] = (bal[o.acct] || 0) + o.v; });
-  TXNS.forEach(t => { if (tCounts(t) && t.date <= T) tEff(t).forEach(([a, v]) => { bal[a] = (bal[a] || 0) + v; }); });
+  // a bank balance from today already includes what went out; today's bills that haven't gone through are still to come
+  occ(T, T).filter(o => o.v < 0 && !o.done && liveToday(o.acct)).forEach(o => { bal[o.acct] = (bal[o.acct] || 0) + o.v; });
+  TXNS.forEach(t => { if (t.date <= T) tEff(t).forEach(([a, v]) => { if (counts(t, a)) bal[a] = (bal[a] || 0) + v; }); });
   R.bal = bal; R.now = sum(Object.values(bal));
   R.inbox = past.filter(o => !o.done && o.date < T);
 
@@ -969,7 +977,7 @@ function unlocks() {
 /* ---------- game layer ---------- */
 function progress() {
   const spentOn = {}, perDay = {};
-  TXNS.forEach(t => { perDay[t.date] = (perDay[t.date] || 0) + 1; if (t.kind === 'exp') spentOn[t.date] = (spentOn[t.date] || 0) + (+t.eur || 0); });
+  TXNS.forEach(t => { if (t.src !== 'live') perDay[t.date] = (perDay[t.date] || 0) + 1; if (t.kind === 'exp') spentOn[t.date] = (spentOn[t.date] || 0) + (+t.eur || 0); });
   const parts = {log: 0, ticks: 0, syncs: 0, under: 0, ns: 0, strikes: 0, kills: 0, trophies: 0};
   Object.values(perDay).forEach(n => { parts.log += 5 * Math.min(n, 10); });
   const doneN = Object.values(MARKS.done).filter(Boolean).length; parts.ticks = 10 * doneN;
@@ -1069,6 +1077,7 @@ function emptyState(h, p, loading) {
 function afterRender() {
   if (PR.lvl > Math.max(+S.seenLvl || 1, lvlShown)) { if ($('#sheet').hidden) openLevelUp(); else pendingLvl = true; }
   if (!fxTried) { fxTried = true; refreshFx(false); }
+  if (!liveTried && liveOn()) { liveTried = true; liveSync(Date.now() - (S.live.lastAt || 0) > 3 * 60000).then(r => liveToast(r, true)); }
   if (prevKills != null && PR.kills > prevKills) { toast('Boss down! A debt is fully paid.', 'big'); confetti(); }
   prevLevel = PR.lvl; prevKills = PR.kills;
   if (!DAYS.d[T] && wroteDay !== T) {
@@ -1092,7 +1101,7 @@ function txnRow(t, opt = {}) {
   const map = {exp: ['spend', 'bag', '−'], inc: ['in', 'coin', '+'], xfer: ['xfer', 'arrow', ''], pay: ['debt', 'sword', '−']};
   const [cls, ico, sign] = map[t.kind] || map.exp;
   const title = t.note || (t.kind === 'inc' ? (t.src || 'Income') : t.kind === 'xfer' ? `Move to ${acctName(t.to)}` : t.kind === 'pay' ? 'Strike' : (t.cat || 'Spending'));
-  const meta = [opt.date ? fmtD(t.date) : '', t.kind === 'xfer' ? `${acctName(t.acct)} → ${acctName(t.to)}` : acctName(t.acct), t.kind === 'inc' ? t.src : t.kind === 'exp' ? t.cat : '', t.date > T ? 'planned' : ''].filter(Boolean).join(' · ');
+  const meta = [opt.date ? fmtD(t.date) : '', t.kind === 'xfer' ? `${acctName(t.acct)} → ${acctName(t.to)}` : acctName(t.acct), t.kind === 'inc' ? (t.src === 'live' ? '' : t.src) : t.kind === 'exp' ? t.cat : '', t.src === 'live' ? (t.pending ? 'pending at bank' : 'from bank') : '', t.date > T ? 'planned' : ''].filter(Boolean).join(' · ');
   const amt = t.cur === 'USD' && t.kind === 'inc' ? `+${usd(t.orig, 2)}<small>≈ ${eur(t.eur, 0)}</small>` : `${sign}${eur(t.eur)}`;
   return `<li class="ev ${cls} clickable" data-act="txn" data-id="${esc(t.id)}" tabindex="0"><span class="ev-ico">${px(ico)}</span><span class="ev-main"><b>${esc(title)}</b><small>${esc(meta)}</small></span><span class="ev-amt">${amt}</span><span class="nobtn"></span></li>`;
 }
@@ -1200,7 +1209,7 @@ function bento(needSync) {
     <a class="bx debt wide" href="#bosses" data-act="nav" data-view="bosses">
       <svg class="ring" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="${Math.round(beat * 100)}% of your debt beaten"><circle cx="32" cy="32" r="24" fill="var(--panel)" stroke="var(--rule)" stroke-width="10"/>${beat > 0.004 ? `<circle cx="32" cy="32" r="24" fill="none" stroke="var(--ink)" stroke-width="10" stroke-linecap="round" stroke-dasharray="${(beat * C).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 32 32)"/>` : ''}<text x="32" y="37" text-anchor="middle">${Math.round(beat * 100)}%</text></svg>
       <span class="grow"><span class="lbl">Debt-free</span><span class="val">${base.finish ? fmtM(base.finish) : 'Reveal every boss'}</span><span class="sub">${eur(rem, 0)} left${base.order[0] ? ' · next boss ' + esc(base.order[0].name) : ''}</span></span></a>
-    <button class="bx money" data-act="sync"><span class="lbl">Money now</span><span class="val">${eur(M.now, 0)}</span><span class="sub">${last ? 'Checked ' + rel(last.d) : 'Not entered yet'} · tap to update</span></button>
+    <button class="bx money" data-act="sync"><span class="lbl">Money now</span><span class="val">${eur(M.now, 0)}</span><span class="sub">${S.live && S.live.url && S.live.lastAt ? `${liveErr ? 'Live sync failed' : 'Live'} · ${liveAgo()}` : (last ? 'Checked ' + rel(last.d) : 'Not entered yet') + ' · tap to update'}</span></button>
     <section class="bx payday"><span class="lbl">Payday</span>${pay ? `<span class="val">${pay.it.cur === 'USD' ? usd(pay.amt) : eur(pay.amt, 0)}</span><span class="sub">${rel(pay.date)} · ${fmtDs(pay.date)}</span>` : '<span class="val">—</span><span class="sub">No income planned</span>'}</section>
     <button class="bx level wide" data-act="level"><span class="avatar">${px(S.avatar || 'sword')}</span><span class="grow"><span class="lbl">Level ${PR.lvl} · ${PR.xp.toLocaleString('en')} XP</span><span class="val" style="font-size:20px">${esc(PR.title)}</span><span class="hp sm gold"><i style="width:${lvPct.toFixed(1)}%"></i></span><span class="sub">${PR.next - PR.xp} XP to level ${PR.lvl + 1} · rewards ›</span></span></button>
   </div>`;
@@ -1666,7 +1675,9 @@ function fail(msg) { const e = $('#f-err'); if (e) { e.textContent = msg; e.hidd
 function openSync() {
   openSheet(sheetHead('What do you have right now?') + `<form class="form" data-form="sync">
     <p class="hint">Open each app and type the balance in euros. For Wise, use the total it shows in EUR. Bills due today count as already gone.</p>
-    ${accts().map(a => `<label class="fld" for="b-${esc(a.id)}"><span>${esc(a.name)}</span><input type="text" id="b-${esc(a.id)}" name="b_${esc(a.id)}" inputmode="decimal" autocomplete="off" value="${r2(M ? (M.bal[a.id] || 0) : 0)}"></label>`).join('')}
+    ${accts().map(a => isLiveAcct(a.id)
+      ? `<label class="fld" for="b-${esc(a.id)}"><span>${esc(a.name)} · live</span><input type="text" id="b-${esc(a.id)}" value="${r2(M ? (M.bal[a.id] || 0) : 0)}" disabled><small>Updated from your bank</small></label>`
+      : `<label class="fld" for="b-${esc(a.id)}"><span>${esc(a.name)}</span><input type="text" id="b-${esc(a.id)}" name="b_${esc(a.id)}" inputmode="decimal" autocomplete="off" value="${r2(M ? (M.bal[a.id] || 0) : 0)}"></label>`).join('')}
     <p class="err" id="f-err" hidden></p>
     <button class="btn gold wide">Save balances · +25 XP</button></form>`);
 }
@@ -1712,6 +1723,7 @@ function openItem(id, preset = {}) {
     <label class="fld" for="i-every" id="i-every-wrap" ${freq === 'days' ? '' : 'hidden'}><span>Every how many days</span><input type="number" id="i-every" name="every" min="1" max="90" value="${esc(v.every || 3)}"></label>
     <div class="two"><label class="fld" for="i-next"><span>${freq === 'once' ? 'Date' : 'Next payment'}</span><input type="date" id="i-next" name="next" value="${ni.next}"></label>
     <label class="fld" for="i-left"><span>Payments left</span><input type="number" id="i-left" name="left" min="0" max="600" value="${ni.left}" placeholder="No end"></label></div>
+    <label class="fld" for="i-match"><span>On your bank statement as</span><input type="text" id="i-match" name="match" value="${esc(v.match || '')}" placeholder="e.g. FACEBK, Meta Platforms" autocomplete="off"><small>Words that help live sync recognise this payment. Separate with commas.</small></label>
     <label class="fld" for="i-note"><span>Note</span><input type="text" id="i-note" name="note" value="${esc(v.note || '')}" placeholder="e.g. Wise if Qonto is empty" autocomplete="off"></label>
     <label class="check"><input type="checkbox" name="debt" id="i-debt" ${v.debt ? 'checked' : ''}> It's a debt (shows up as a boss)</label>
     <label class="fld" for="i-owed" id="i-owed-wrap" ${v.debt && !v.income ? '' : 'hidden'}><span>Still owed in total (${sym})</span><input type="text" id="i-owed" name="owed" inputmode="decimal" autocomplete="off" value="${owedShow}" placeholder="${dd && dd.unknown ? 'Not known yet, type it in' : 'e.g. 4.000'}"><input type="hidden" name="oowed" value="${owedV}"><small id="i-owed-prev">Type the total and the amount you want to pay each time. I'll work out how many payments are left.</small></label>
@@ -1764,6 +1776,170 @@ function refreshOpenSheet() {
   if (t === 'Missing payments?') openMissing();
   else if ($('#q-out')) $('#q-out').innerHTML = searchOut(searchQ);
   else closeSheet();
+}
+
+/* ----- live bank sync -----
+   Your own sync service (github.com/amirsetu/debt-slayer-sync) reads Qonto and Wise. The app pulls what changed,
+   updates balances, ticks off bills that went through and logs the rest. The app key stays on this device. */
+const LIVE_KEY = 'debtslayer.liveKey';
+const liveKey = () => { try { return localStorage.getItem(LIVE_KEY) || ''; } catch (e) { return ''; } };
+const liveOn = () => !!(store && store.kind === 'local' && S && S.live && S.live.url && liveKey());
+function liveAgo() {
+  const ms = Date.now() - ((S.live && S.live.lastAt) || 0), m = Math.round(ms / 60000);
+  return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : rel(isoOf(new Date(S.live.lastAt)));
+}
+async function liveFetch(path, method = 'GET') {
+  const r = await fetch(S.live.url.replace(/\/+$/, '') + path, {method, headers: {Authorization: 'Bearer ' + liveKey()}});
+  if (r.status === 401) throw new Error("the app key doesn't match your sync service");
+  if (!r.ok) throw new Error('the sync service answered ' + r.status);
+  return r.json();
+}
+async function liveSync(pull) {
+  if (!liveOn() || liveBusy) return null;
+  liveBusy = true;
+  try {
+    if (pull) await liveFetch('/v1/sync', 'POST');
+    let cursor = S.live.cursor || 0, feed, txs = [];
+    for (let i = 0; i < 10; i++) { feed = await liveFetch('/v1/feed?since=' + cursor); txs = txs.concat(feed.transactions || []); cursor = feed.cursor; if (!feed.more) break; }
+    const res = await applyFeed(feed.accounts || [], txs, cursor, feed.status || {});
+    liveErr = null;
+    return res;
+  } catch (e) { liveErr = (e && e.message) || String(e); console.warn('live', e); return null; }
+  finally { liveBusy = false; scheduleRender(); }
+}
+const ALIAS = {meta: ['facebk', 'facebook', 'meta platforms'], claude: ['anthropic'], chatgpt: ['openai'], loom: ['atlassian'], prime: ['amazon', 'amzn'], rent: ['miete'], pyur: ['tele columbus'], dak: ['dak-gesundheit', 'dak gesundheit']};
+const WEAK = new Set(['business', 'community', 'kredit', 'account', 'fees', 'insurance', 'health', 'mobile', 'internet', 'plan', 'back', 'payment', 'workspace']);
+function matchName(it, text) {
+  const hay = norm(text);
+  if (!hay) return false;
+  const words = norm([it.name, it.group].filter(Boolean).join(' ')).split(/[^a-z0-9]+/).filter(w => w.length >= 3 && !WEAK.has(w));
+  for (const w of words) { if (hay.includes(w)) return true; for (const a of ALIAS[w] || []) if (hay.includes(a)) return true; }
+  return String(it.match || '').split(',').map(s => norm(s.trim())).some(x => x && hay.includes(x));
+}
+const CAT_WORDS = [
+  ['Groceries', ['rewe', 'lidl', 'aldi', 'edeka', 'netto', 'penny', 'kaufland', 'rossmann', 'dm-drogerie', 'dm drogerie', 'denns', 'bio company']],
+  ['Food & dinner', ['restaurant', 'cafe', 'coffee', 'starbucks', 'lieferando', 'wolt', 'uber eats', 'mcdonald', 'burger', 'pizza', 'sushi', 'bakery', 'backerei', 'baeckerei', 'kebab', 'doner']],
+  ['Transport', ['deutsche bahn', 'db vertrieb', 'bvg', 'mvg', 'hvv', 'uber', 'bolt', 'freenow', 'free now', 'tier', 'lime', 'shell', 'aral', 'esso', 'total', 'tankstelle', 'flixbus']],
+  ['Shopping', ['amazon', 'amzn', 'zalando', 'ikea', 'h&m', 'uniqlo', 'apple.com', 'mediamarkt', 'saturn', 'ebay', 'etsy']],
+  ['Fun', ['netflix', 'spotify', 'kino', 'cinema', 'steam', 'playstation', 'xbox', 'ticket']],
+  ['Health', ['apotheke', 'pharmacy', 'arzt', 'doctor', 'zahn', 'physio']],
+];
+function guessCat(t) {
+  const hay = norm(t.counterparty + ' ' + t.description);
+  for (const [c, ws] of CAT_WORDS) if (ws.some(w => hay.includes(w))) return c;
+  return t.kind === 'fee' ? 'Business' : 'Other';
+}
+function guessSrc(t) {
+  const hay = norm(t.counterparty + ' ' + t.description);
+  return /skool/.test(hay) ? 'Skool' : /sponsor/.test(hay) ? 'Sponsorship' : /impact|partnerstack|awin|rewardful|affiliate|lemon squeezy|digistore|stripe|paddle|gumroad/.test(hay) ? 'Affiliate' : 'Other';
+}
+function guessAcct(a) {
+  const n = norm(a.name), ids = accts().map(x => x.id);
+  const byName = accts().filter(x => n.includes(norm(x.name))).sort((x, y) => y.name.length - x.name.length)[0];
+  if (/qonto/.test(n) && ids.includes('qonto')) return 'qonto';
+  if (/wise business/.test(n) && ids.includes('wise')) return 'wise';
+  if (/wise/.test(n)) return ids.includes('wise') ? 'wise' : (byName ? byName.id : '');
+  return byName ? byName.id : '';
+}
+async function applyFeed(accounts, txs, cursor, status) {
+  const now = Date.now(), map = Object.assign({}, S.live.map || {}), names = {};
+  accounts.forEach(a => { names[a.id] = a.name; if (!(a.id in map)) map[a.id] = guessAcct(a); });
+  const toEur = (cents, cur) => cur === 'EUR' ? cents / 100 : cur === 'USD' ? cents / 100 * rate() : null;
+  const sPatch = {live: {map, names, cursor, lastAt: now, status}};
+  const bal = {};
+  accounts.forEach(a => { const app = map[a.id], v = app ? toEur(a.balance_cents, a.currency) : null; if (v != null) bal[app] = (bal[app] || 0) + v; });
+  if (Object.keys(bal).length) {
+    sPatch.balances = Object.fromEntries(Object.entries(bal).map(([k, v]) => [k, r2(v)]));
+    sPatch.acctSync = Object.fromEntries(Object.keys(bal).map(k => [k, {d: T, at: now, live: true}]));
+    const last = (S.syncs || []).slice(-1)[0];
+    if (!last || last.d !== T) sPatch.syncs = (S.syncs || []).slice(-90).concat({d: T, total: r2(sum(Object.values(Object.assign({}, S.balances || {}, sPatch.balances))))});
+  }
+  const seen = LIVE.seen || {}, seenPatch = {}, marks = {done: {}, ov: {}}, ops = [], claimed = new Set();
+  const since = S.live.since || T, out = {matched: 0, logged: 0, moved: 0, updated: 0, names: []};
+  const dayOf = t => t.booked_at ? isoOf(new Date(t.booked_at)) : T;
+  const fresh = txs.filter(t => map[t.account_id] && !seen[t.id]).sort((x, y) => (x.booked_at || '') < (y.booked_at || '') ? -1 : 1);
+  // money that left one of your accounts and landed in another is a move, not spending
+  const pair = new Map();
+  fresh.filter(t => t.amount_cents < 0 && t.kind !== 'conversion' && t.status !== 'cancelled').forEach(d => {
+    const c = fresh.find(c => c.amount_cents > 0 && !pair.has(c.id) && c.status !== 'cancelled' && map[c.account_id] !== map[d.account_id] && c.currency === d.currency
+      && Math.abs(c.amount_cents + d.amount_cents) <= Math.max(100, Math.abs(d.amount_cents) * 0.01) && Math.abs(diffD(dayOf(c), dayOf(d))) <= 3);
+    if (c) { pair.set(c.id, d.id); pair.set(d.id, c.id); }
+  });
+  for (const t of txs) {
+    const app = map[t.account_id]; if (!app) continue;
+    const prev = seen[t.id], date = dayOf(t), dead = t.status === 'cancelled', sig = t.amount_cents + '|' + t.status;
+    const eurV = toEur(Math.abs(t.amount_cents), t.currency);
+    if (prev) {
+      if (prev.sig === sig) continue;
+      if (prev.t === 'txn') ops.push(dead ? store.del('txns/' + prev.ref) : store.update('txns/' + prev.ref, {eur: r2(eurV), orig: r2(t.currency === 'USD' && t.amount_cents > 0 ? Math.abs(t.amount_cents) / 100 : eurV), pending: t.status === 'pending' ? true : null}));
+      if (prev.t === 'occ' && dead) marks.done[prev.ref] = null;
+      seenPatch[t.id] = Object.assign({}, prev, {sig}); out.updated++;
+      continue;
+    }
+    if (dead || t.kind === 'conversion' || eurV == null) { seenPatch[t.id] = {t: 'skip', sig}; continue; }
+    if (pair.has(t.id)) {
+      if (t.amount_cents > 0) continue;
+      const o = txs.find(x => x.id === pair.get(t.id));
+      if (date >= since) {
+        const id = uid();
+        ops.push(store.set('txns/' + id, {kind: 'xfer', date, eur: r2(eurV), orig: r2(eurV), cur: 'EUR', acct: app, to: map[o.account_id], src: 'live', ext: t.id, at: now}));
+        seenPatch[t.id] = {t: 'txn', ref: id, sig}; out.moved++;
+      } else seenPatch[t.id] = {t: 'skip', sig};
+      seenPatch[o.id] = {t: 'skip', sig: o.amount_cents + '|' + o.status};
+      continue;
+    }
+    // a scheduled bill or income: same direction, ±4 days, the name on the statement or the exact amount
+    let best = null, bestScore = 0;
+    for (const o of occ(addD(date, -4), addD(date, 4))) {
+      if (o.done || claimed.has(o.key) || (t.amount_cents < 0) !== (o.v < 0)) continue;
+      const want = Math.abs(o.v), off = Math.abs(eurV - want) / Math.max(want, 1), named = matchName(o.it, t.counterparty + ' ' + t.description);
+      if (!named && (off > 0.02 || o.acct !== app)) continue;
+      const score = (named ? 3 : 0) + (off <= 0.02 ? 3 : off <= 0.25 ? 1.5 : 0) + (o.acct === app ? 1 : 0) - Math.abs(diffD(o.date, date)) * 0.3;
+      if (score > bestScore) { bestScore = score; best = o; }
+    }
+    if (best && bestScore >= 3) {
+      claimed.add(best.key);
+      marks.done[best.key] = now;
+      const orig = best.it.cur === t.currency ? Math.abs(t.amount_cents) / 100 : best.it.cur === 'EUR' ? eurV : null;
+      if (orig != null && Math.abs(orig - best.amt) > 0.004) marks.ov[best.key] = {amt: r2(orig)};
+      seenPatch[t.id] = {t: 'occ', ref: best.key, sig}; out.matched++; out.names.push(best.it.name);
+      continue;
+    }
+    if (date < since) { seenPatch[t.id] = {t: 'skip', sig}; continue; }
+    const id = uid(), note = t.counterparty || t.description || (t.amount_cents < 0 ? 'Card payment' : 'Money in');
+    if (t.amount_cents < 0) ops.push(store.set('txns/' + id, {kind: 'exp', date, eur: r2(eurV), orig: r2(eurV), cur: 'EUR', acct: app, cat: guessCat(t), note, src: 'live', ext: t.id, pending: t.status === 'pending' ? true : null, at: now}));
+    else ops.push(store.set('txns/' + id, {kind: 'inc', date, eur: r2(eurV), orig: r2(t.currency === 'USD' ? Math.abs(t.amount_cents) / 100 : eurV), cur: t.currency === 'USD' ? 'USD' : 'EUR', acct: app, src: 'live', note: guessSrc(t) === 'Other' ? note : `${guessSrc(t)} · ${note}`, ext: t.id, at: now}));
+    seenPatch[t.id] = {t: 'txn', ref: id, sig}; out.logged++; out.names.push(note);
+  }
+  if (Object.keys(marks.done).length || Object.keys(marks.ov).length) ops.push(store.update('fin/marks', marks));
+  if (Object.keys(seenPatch).length) ops.push(store.update('fin/live', {seen: seenPatch}));
+  ops.push(store.update('fin/settings', sPatch));
+  await Promise.all(ops);
+  out.errors = Object.entries(status || {}).filter(([, s]) => s && s.ok === false).map(([k, s]) => `${k}: ${s.error}`);
+  return out;
+}
+function liveToast(r, quiet) {
+  if (!r) { if (!quiet) toast(`Live sync failed: ${esc(liveErr || 'unknown error')}`, 'bad'); return; }
+  const bits = [r.matched ? `${r.matched} bill${r.matched > 1 ? 's' : ''} went through` : '', r.logged ? `${r.logged} new from the bank` : '', r.moved ? `${r.moved} move${r.moved > 1 ? 's' : ''}` : ''].filter(Boolean);
+  if (r.errors.length) toast(`Live sync: ${esc(r.errors[0].slice(0, 120))}`, 'bad');
+  else if (bits.length) toast(`Live · ${bits.join(' · ')}${r.matched ? ` · <b>+${r.matched * 10} XP</b>` : ''}`);
+  else if (!quiet) toast('Live · everything is up to date');
+}
+function liveSettings() {
+  if (!store || store.kind !== 'local') return `<h2>Live bank sync</h2><p class="small muted">Live sync works in the phone app (amirsetu.github.io/debt-slayer).</p>`;
+  const L = S.live || {}, on = !!(L.url && liveKey()), ids = Object.keys(L.names || {});
+  const st = Object.entries(L.status || {}).map(([k, s]) => `${k[0].toUpperCase() + k.slice(1)} ${s.ok ? '✓' : '✗ ' + esc(String(s.error || '').slice(0, 80))}`).join(' · ');
+  return `<h2>Live bank sync</h2>
+    <p class="small muted">Connect your own sync service and Qonto and Wise update by themselves: balances, bills that went through, and card spending. Set it up once with the guide in your private repo, debt-slayer-sync.</p>
+    <form class="form" data-form="live">
+      <label class="fld" for="lv-url"><span>Sync service address</span><input type="text" id="lv-url" name="url" value="${esc(L.url || '')}" placeholder="https://debt-slayer-sync.you.workers.dev" autocomplete="off" inputmode="url"></label>
+      <label class="fld" for="lv-key"><span>App key</span><input type="password" id="lv-key" name="key" placeholder="${liveKey() ? 'Saved on this device' : 'The APP_KEY you chose'}" autocomplete="off"><small>Kept only on this device. Each phone or computer asks once.</small></label>
+      ${ids.length ? `<fieldset class="fld"><legend>Which app account is each bank account?</legend><div class="stack">${ids.map((id, i) => `<label class="fld" for="lm-${i}"><span>${esc(L.names[id])}</span><select id="lm-${i}" name="lm_${esc(id)}"><option value="">Don't use</option>${accts().map(a => `<option value="${esc(a.id)}" ${(L.map || {})[id] === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>`).join('')}</div></fieldset>` : ''}
+      ${on ? `<p class="hint">Last sync ${liveAgo()}${st ? ' · ' + st : ''}${liveErr ? ` · <span class="bad">${esc(liveErr)}</span>` : ''}</p>` : ''}
+      <p class="err" id="lv-err" hidden></p>
+      <div class="formrow"><button class="btn gold">${on ? 'Save' : 'Connect'}</button>${on ? `<button type="button" class="btn" data-act="livesync">Sync now</button>` : ''}</div>
+      ${on ? `<div><button type="button" class="btn ghost danger" data-act="liveoff">Disconnect this device</button></div>` : ''}
+    </form>`;
 }
 
 /* ----- search ----- */
@@ -2023,6 +2199,7 @@ function openSettings() {
     ${horizonHelp()}
     <fieldset class="fld"><legend>Account names</legend><div class="stack">${accts().map(a => `<input type="text" name="an_${esc(a.id)}" id="an-${esc(a.id)}" value="${esc(a.name)}" aria-label="Name for ${esc(a.id)}">`).join('')}</div></fieldset>
     <button class="btn gold wide">Save settings</button></form>
+    <div class="stack" style="margin-top:22px">${liveSettings()}</div>
     <div class="form" style="margin-top:22px">
       <label class="fld" for="s-backup"><span>Backup</span><textarea id="s-backup" readonly>${esc(backup)}</textarea><small>The same backup as text.</small></label>
       <div class="formrow"><button type="button" class="btn gold" data-act="savebackup">Save backup file</button><button type="button" class="btn" data-act="copybackup">Copy backup</button></div>
@@ -2088,6 +2265,8 @@ const ACTIONS = {
     : save(store.update('fin/days', {d: {[T]: {a: r2(M.allow), t: r2(M.target), ns: true}}}), 'No-spend day locked in. Hold it and earn <b>+30 XP</b> tomorrow.'),
   occ: b => openOcc(b.dataset.key, b.dataset.back),
   level: () => openLevel(),
+  livesync: b => { b.disabled = true; b.textContent = 'Syncing…'; liveSync(true).then(r => { closeSheet(); liveToast(r); }); },
+  liveoff: () => { try { localStorage.removeItem(LIVE_KEY); } catch (e) {} liveErr = null; closeSheet(); toast('This device is disconnected. Your bank data stays on your sync service.'); scheduleRender(); },
   boss: b => openBoss(b.dataset.id),
   penny: () => toast(pennyTip()),
   key: b => pressKey(b.dataset.k),
@@ -2147,6 +2326,24 @@ const ACTIONS = {
   },
 };
 const FORMS = {
+  async live(f, fd) {
+    const er = m => { const e = $('#lv-err'); if (e) { e.textContent = m; e.hidden = false; } };
+    const url = String(fd.get('url') || '').trim().replace(/\/+$/, ''), key = String(fd.get('key') || '').trim();
+    if (!/^https:\/\/|^http:\/\/localhost(:\d+)?$/.test(url)) return er('Paste the https:// address of your sync service.');
+    if (key) { try { localStorage.setItem(LIVE_KEY, key); } catch (e) { return er("This browser won't keep the key."); } }
+    if (!liveKey()) return er('Type the app key you chose.');
+    try { const r = await fetch(url + '/v1/health'); if (!r.ok) throw new Error(); } catch (e) { return er("Can't reach that address. Check it and your internet."); }
+    const map = {};
+    for (const [k, v] of fd.entries()) if (k.startsWith('lm_')) map[k.slice(3)] = v;
+    const first = !(S.live && S.live.url);
+    const mapPatch = Object.assign({}, (S.live || {}).map || {}, map);
+    await save(store.update('fin/settings', {live: {url, map: mapPatch, since: (S.live && S.live.since) || T}}));
+    const btn = f.querySelector('button.gold'); if (btn) { btn.disabled = true; btn.textContent = first ? 'Connecting…' : 'Syncing…'; }
+    const r = await liveSync(true);
+    if (!r) { if (btn) { btn.disabled = false; btn.textContent = 'Try again'; } return er(`Sync failed: ${liveErr}`); }
+    closeSheet(); liveToast(r);
+    if (first) setTimeout(() => { openSettings(); const b = $('#lv-url'); if (b) b.scrollIntoView({block: 'center'}); }, 400);
+  },
   search() { const i = $('#q-search'); if (i) i.blur(); },
   spend(f, fd) {
     const amt = num(fd.get('amt')); if (!(amt > 0)) return fail('Type how much you spent.');
@@ -2186,11 +2383,15 @@ const FORMS = {
       .then(() => { closeSheet(); toast(`New boss: ${esc(name)} · ${eur(amt * count, 0)} HP`); });
   },
   sync(f, fd) {
-    const balances = {};
-    for (const a of accts()) { const v = num(fd.get('b_' + a.id)); if (isNaN(v)) return fail(`Check the number for ${a.name}.`); balances[a.id] = r2(v); }
-    const total = r2(sum(Object.values(balances)));
+    const balances = {}, acctSync = {}, now = Date.now();
+    for (const a of accts()) {
+      if (isLiveAcct(a.id)) continue;
+      const v = num(fd.get('b_' + a.id)); if (isNaN(v)) return fail(`Check the number for ${a.name}.`);
+      balances[a.id] = r2(v); acctSync[a.id] = {d: T, at: now, live: false};
+    }
+    const total = r2(sum(Object.values(Object.assign({}, S.balances || {}, balances))));
     const syncs = (S.syncs || []).slice(-90).concat({d: T, total});
-    save(store.update('fin/settings', {balances, syncDate: T, syncAt: Date.now(), syncs}), `Balances saved · <b>+25 XP</b>`).then(closeSheet);
+    save(store.update('fin/settings', {balances, acctSync, syncDate: T, syncAt: now, syncs}), `Balances saved · <b>+25 XP</b>`).then(closeSheet);
   },
   item(f, fd) {
     const id = f.dataset.id, old = id ? ITEMS.find(i => i.id === id) : null;
@@ -2203,7 +2404,7 @@ const FORMS = {
     const data = Object.assign({}, old || {}, {
       name, amt: r2(amt), cur: fd.get('cur'), acct: fd.get('acct'), cat: income ? 'Income' : (fd.get('cat') === 'Income' ? 'Other bills' : fd.get('cat')),
       income, freq, every: freq === 'days' ? Math.max(1, parseInt(fd.get('every'), 10) || 3) : (old && old.every) || null,
-      note: (fd.get('note') || '').trim(), debt: !income && !!fd.get('debt'), biz: !!fd.get('biz'), paused: !!fd.get('paused'),
+      note: (fd.get('note') || '').trim(), match: (fd.get('match') || '').trim(), debt: !income && !!fd.get('debt'), biz: !!fd.get('biz'), paused: !!fd.get('paused'),
     });
     delete data.id;
     if (old && old.guess && !fd.get('guess')) data.guess = false;
@@ -2329,7 +2530,12 @@ function owedPreview() {
   const lastD = rawOcc({freq, start: next, day: +next.slice(8), every: +f.every.value || 3, count: n}, next, '9999-12-31').slice(-1)[0];
   el.innerHTML = `<b>${n} payment${n > 1 ? 's' : ''}</b>${Math.abs(last - amt) >= 0.005 ? ` (${n - 1} × ${eur(amt)} and a last one of ${eur(last)})` : ` of ${eur(amt)}`}. Last one ${lastD ? fmtD(lastD) : '—'}.`;
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden && isoOf(new Date()) !== T) scheduleRender(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  if (isoOf(new Date()) !== T) scheduleRender();
+  if (liveOn() && Date.now() - (S.live.lastAt || 0) > 3 * 60000) liveSync(true).then(r => liveToast(r, true));
+});
+setInterval(() => { if (!document.hidden && liveOn()) liveSync(false).then(r => liveToast(r, true)); }, 5 * 60000);
 
 /* ---------- boot ---------- */
 async function boot() {
@@ -2354,6 +2560,7 @@ async function boot() {
   store.watchDoc('fin/days', d => { DAYS = {d: (d && d.d) || {}}; got.d = true; scheduleRender(); }, err);
   store.watchColl('items', list => { ITEMS = list; got.i = true; scheduleRender(); }, err);
   store.watchColl('txns', list => { TXNS = list; got.t = true; scheduleRender(); }, err);
+  store.watchDoc('fin/live', d => { LIVE = {seen: (d && d.seen) || {}}; }, err);
   setTimeout(() => { if (!allGot()) { slow = true; scheduleRender(); } }, 10000);
 }
 boot();
