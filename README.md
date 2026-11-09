@@ -13,9 +13,10 @@ It then opens full screen like a normal app and works offline.
 
 ## Your data
 
-- Everything you enter stays **on that device**, in the browser's storage. This repository contains no personal data.
-- To move your board, use **Settings → Save backup file** on one device and **Restore a backup** on the other.
-- On iPhone, deleting the home-screen icon also deletes its data. Save a backup file to iCloud Drive or Files every week. The app reminds you when one is due.
+- Everything you enter is kept **on the device**, in the browser's storage. This repository contains no personal data.
+- **Cloud backup** (Settings, after connecting your sync service): the board is locked on the device with a passphrase you choose (PBKDF2 + AES-GCM), then kept by your own sync service. Nobody else can open it. Every device with the passphrase loads the newest board when it opens; if two devices both changed it, the app asks which one to keep. **Earlier backups** goes back a month.
+- New device: open the app, tap **From cloud backup**, and enter the sync address, app key and passphrase.
+- Without cloud backup, use **Settings → Save backup file** and **Restore a backup**. On iPhone, deleting the home-screen icon also deletes its data, so save a file every week; the app reminds you.
 
 ## Working on it
 
@@ -43,4 +44,4 @@ The tests load the real app script in Node with no page (`test/harness.js`) and 
 | `icons/` | App icons, drawn by `tools/make_icons.py` |
 | `tools/build.py` | Builds `index.html` and `sw.js` from the source |
 | `tools/qa.py` | A QA copy with a date override and the engine on `window.__qa` |
-| `test/` | Engine tests: the daily limit and live bank matching |
+| `test/` | Engine tests: the daily limit, live bank matching and cloud backup |

@@ -88,7 +88,7 @@ rep("""<div class="formrow"><button type="button" class="btn" data-act="copyback
       <div class="formrow"><button type="button" class="btn" data-act="import">Restore</button></div>
       <p class="err" id="f-err" hidden></p>""",
     """<div class="formrow"><button type="button" class="btn gold" data-act="savebackup">Save backup file</button><button type="button" class="btn" data-act="copybackup">Copy backup</button></div>
-      <p class="small muted">${lastBackup() ? `Last backup ${esc(rel(lastBackup()))}.` : 'No backup saved on this device yet.'} Your data lives only on this device. Save a file to iCloud Drive or Files every week.</p>
+      <p class="small muted">${lastBackup() ? `Last backup ${esc(rel(lastBackup()))}.` : 'No backup saved on this device yet.'} ${cloudOn() ? 'Cloud backup is on as well.' : 'Your data lives only on this device. Save a file to iCloud Drive or Files every week.'}</p>
       ${restoreBlock()}""")
 rep("<small>Copy this somewhere safe. Paste a backup below to restore it.</small>", "<small>The same backup as text.</small>")
 
@@ -107,14 +107,14 @@ rep("""  if (e.target.name === 'freq') {""",
 
 # ---- first run: restore button next to "Start a blank board" ----
 rep("""You can also paste a backup from Settings.</p><button class="btn gold" data-act="blank">${px('plus')} Start a blank board</button></div>`;""",
-    """Moving from another device? Restore your backup file.</p><div class="row"><button class="btn gold" data-act="restore">${px('arrow')} Restore a backup</button><button class="btn" data-act="blank">${px('plus')} Start a blank board</button></div></div>`;""")
+    """Moving from another device? Restore your cloud backup or a backup file.</p><div class="row"><button class="btn gold" data-act="cloudrestore">${px('lock')} From cloud backup</button><button class="btn" data-act="restore">${px('arrow')} From a file</button><button class="btn" data-act="blank">${px('plus')} Start a blank board</button></div></div>`;""")
 rep("Start a blank board, then add your income, bills and debts from the Bills tab.", "Start a blank board and add your income, bills and debts from the Bills tab.")
 
 # ---- device-only banner and weekly backup nudge on HQ ----
 rep("""main.innerHTML = html + (store.kind === 'local' ? `<p class="banner">Saved in this browser only.</p>` : '');""",
-    """main.innerHTML = html + (store.kind === 'local' ? `<p class="banner">Saved on this device only. ${lastBackup() ? `Last backup ${esc(rel(lastBackup()))}.` : 'No backup yet.'} <button class="linkbtn" data-act="savebackup">Save a backup</button></p>` : '');""")
+    """main.innerHTML = html + (store.kind === 'local' ? cloudOn() ? `<p class="banner">Cloud backup on · ${cloudStatus()}</p>` : `<p class="banner">Saved on this device only. ${lastBackup() ? `Last backup ${esc(rel(lastBackup()))}.` : 'No backup yet.'} <button class="linkbtn" data-act="savebackup">Save a backup</button></p>` : '');""")
 rep("""  return `<div class="hq"><div class="col">${greet()}""",
-    """  const nudge = store.kind === 'local' && backupDue() && ITEMS.length ? `<div class="nudge"><span>${lastBackup() ? `Last backup ${esc(rel(lastBackup()))}.` : 'No backup yet.'} This phone is the only copy of your board.</span><button class="btn sm" data-act="savebackup">Save backup</button></div>` : '';
+    """  const nudge = store.kind === 'local' && !cloudOn() && backupDue() && ITEMS.length ? `<div class="nudge"><span>${lastBackup() ? `Last backup ${esc(rel(lastBackup()))}.` : 'No backup yet.'} This phone is the only copy of your board.</span><button class="btn sm" data-act="savebackup">Save backup</button></div>` : '';
   return `<div class="hq"><div class="col">${nudge}${greet()}""")
 
 # ---- offline + ask the browser to keep the data ----

@@ -668,7 +668,8 @@ function localStore() {
   try { data = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { data = {}; }
   const subs = [];
   const merge = (a, b) => { for (const k of Object.keys(b)) { const v = b[k]; if (v && typeof v === 'object' && !Array.isArray(v) && a[k] && typeof a[k] === 'object' && !Array.isArray(a[k])) merge(a[k], v); else a[k] = v; } return a; };
-  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(data)); } catch (e) {} subs.forEach(f => f()); };
+  const changed = [];
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(data)); } catch (e) {} subs.forEach(f => f()); changed.forEach(f => f()); };
   const coll = c => Object.keys(data).filter(k => k.startsWith(c + '/') && k.split('/').length === 2).map(k => Object.assign({id: k.split('/')[1]}, clone(data[k])));
   return {
     kind: 'local',
@@ -678,6 +679,9 @@ function localStore() {
     async update(p, patch) { data[p] = merge(clone(data[p] || {}), clone(patch)); save(); },
     async add(c, d) { const id = uid(); data[c + '/' + id] = clone(d); save(); return id; },
     async del(p) { delete data[p]; save(); },
+    onChange(f) { changed.push(f); },
+    dump: () => clone(data),
+    load(docs) { data = clone(docs || {}); save(); },
   };
 }
 function save(promise, okMsg) {
@@ -1031,6 +1035,10 @@ function emptyState(h, p, loading) {
   return `<div class="empty">${loading ? '<div class="loadpx"><i></i><i></i><i></i></div>' : px('lock', 'big-lock')}<h1>${esc(h)}</h1><p class="muted">${esc(p)}</p></div>`;
 }
 function afterRender() {
+  // with cloud backup on, opening the app first fetches a newer board from your other devices; the app's own
+  // automatic writes below (rate, day snapshot, bank sync) wait until that's done
+  if (!cloudTried && cloudOn()) { cloudTried = true; cloudGate = cloudCheck().finally(() => { cloudGate = null; scheduleRender(); }); }
+  if (cloudGate) return;
   if (PR.lvl > Math.max(+S.seenLvl || 1, lvlShown)) { if ($('#sheet').hidden) openLevelUp(); else pendingLvl = true; }
   if (!fxTried) { fxTried = true; refreshFx(false); }
   if (!liveTried && liveOn()) { liveTried = true; liveSync(Date.now() - (S.live.lastAt || 0) > 3 * 60000).then(r => liveToast(r, true)); }
@@ -1754,6 +1762,9 @@ async function liveFetch(path, method = 'GET') {
   return r.json();
 }
 async function liveSync(pull) {
+  // a newer board from another device lands first, so two open devices don't both log the same bank payment
+  if (cloudOn() && !cloudGate && Date.now() - cloudLastCheck > 60000) cloudGate = cloudCheck().finally(() => { cloudGate = null; });
+  if (cloudGate) await cloudGate;
   if (!liveOn() || liveBusy) return null;
   liveBusy = true;
   try {
@@ -1903,6 +1914,190 @@ function liveSettings() {
       <div class="formrow"><button class="btn gold">${on ? 'Save' : 'Connect'}</button>${on ? `<button type="button" class="btn" data-act="livesync">Sync now</button>` : ''}</div>
       ${on ? `<div><button type="button" class="btn ghost danger" data-act="liveoff">Disconnect this device</button></div>` : ''}
     </form>`;
+}
+
+/* ----- cloud backup -----
+   The whole board, locked on this device with a passphrase you choose (PBKDF2 → AES-GCM), then kept by your
+   sync service. The service, Cloudflare and anyone with the app key only ever see the locked envelope. Every
+   device that has the passphrase loads the newest board when it opens; if two devices both changed it, you pick. */
+const CLOUD_KEY = 'debtslayer.cloud', DEV_KEY = 'debtslayer.device', KDF_ITER = 600000;
+const AAD = new TextEncoder().encode('debt-slayer backup v1');
+let cloudBusy = false, cloudErr = null, cloudTried = false, cloudGate = null, cloudTimer = null, cloudDirtyAt = 0, cloudLoading = false, cloudLastCheck = 0, cloudPending = null;
+const readJSON = k => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
+const writeJSON = (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } };
+const cloudConf = () => readJSON(CLOUD_KEY);
+const cloudOn = () => !!(liveOn() && (cloudConf() || {}).k);
+function device() {
+  let d = readJSON(DEV_KEY);
+  if (!d || !d.id) {
+    const u = navigator.userAgent || '';
+    d = {id: uid() + uid(), label: /iPhone/.test(u) ? 'iPhone' : /iPad/.test(u) ? 'iPad' : /Android/.test(u) ? 'Android phone' : /Macintosh|Mac OS/.test(u) ? 'Mac' : /Windows/.test(u) ? 'Windows PC' : 'browser'};
+    writeJSON(DEV_KEY, d);
+  }
+  return d;
+}
+const agoIso = iso => { const m = Math.round((Date.now() - Date.parse(iso)) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : fmtD(isoOf(new Date(iso))); };
+const whenIso = iso => { const d = new Date(iso); return `${fmtD(isoOf(d))}, ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+
+const toB64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
+const fromB64 = s => { const b = atob(s), u8 = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u8[i] = b.charCodeAt(i); return u8; };
+const pipeBytes = async (u8, ts) => new Uint8Array(await new Response(new Blob([u8]).stream().pipeThrough(ts)).arrayBuffer());
+const aesKey = k => crypto.subtle.importKey('raw', fromB64(k), 'AES-GCM', false, ['encrypt', 'decrypt']);
+/** the passphrase never leaves this device and is never stored; only the key made from it is kept, here */
+async function lockKey(pass, salt, iter) {
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(String(pass).normalize('NFC')), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({name: 'PBKDF2', hash: 'SHA-256', salt: fromB64(salt), iterations: iter}, base, 256);
+  return {k: toB64(new Uint8Array(bits)), salt, iter};
+}
+const newLockKey = pass => lockKey(pass, toB64(crypto.getRandomValues(new Uint8Array(16))), KDF_ITER);
+const keyForEnvelope = (pass, blob) => { const e = JSON.parse(blob); return lockKey(pass, e.salt, e.kdf.iter); };
+async function seal(obj, kc) {
+  const plain = new TextEncoder().encode(JSON.stringify(obj));
+  const z = typeof CompressionStream === 'function' ? await pipeBytes(plain, new CompressionStream('gzip')) : null;
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({name: 'AES-GCM', iv, additionalData: AAD}, await aesKey(kc.k), z || plain));
+  return JSON.stringify({v: 1, alg: 'AES-GCM', kdf: {name: 'PBKDF2-SHA256', iter: kc.iter}, salt: kc.salt, iv: toB64(iv), z: z ? 'gzip' : 'none', ct: toB64(ct)});
+}
+async function unseal(blob, kc) {
+  const e = JSON.parse(blob);
+  let pt;
+  try { pt = new Uint8Array(await crypto.subtle.decrypt({name: 'AES-GCM', iv: fromB64(e.iv), additionalData: AAD}, await aesKey(kc.k), fromB64(e.ct))); }
+  catch (err) { throw new Error("That passphrase doesn't open your cloud backup."); }
+  if (e.z === 'gzip') {
+    if (typeof DecompressionStream !== 'function') throw new Error('This browser is too old to open the backup. Update it and try again.');
+    pt = await pipeBytes(pt, new DecompressionStream('gzip'));
+  }
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+/** a fingerprint of what you changed. It leaves out what every device writes by itself (sync times, the daily rate,
+   the day's limit snapshot, which level you've seen), so housekeeping never counts as an edit or starts a conflict */
+async function boardHash(docs) {
+  const d = clone(docs) || {}, s = d['fin/settings'], days = d['fin/days'];
+  if (s) {
+    if (s.live) { delete s.live.lastAt; delete s.live.status; }
+    if (s.acctSync) Object.values(s.acctSync).forEach(a => { if (a) delete a.at; });
+    if (s.fxAuto !== false) { delete s.fx; delete s.fxDate; delete s.fxSrc; delete s.fxAuto; }
+    delete s.seenLvl;
+  }
+  if (days && days.d) for (const k of Object.keys(days.d)) { const x = days.d[k]; if (x) { delete x.a; delete x.t; if (!Object.keys(x).length) delete days.d[k]; } }
+  return toB64(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(d)))).slice(0, 12));
+}
+async function cloudFetch(path, {method = 'GET', body, url, key} = {}) {
+  url = url || (S && S.live && S.live.url);
+  if (!url) throw new Error('connect your sync service first');
+  const r = await fetch(String(url).replace(/\/+$/, '') + path, {method,
+    headers: Object.assign({Authorization: 'Bearer ' + (key || liveKey())}, body ? {'Content-Type': 'application/json'} : {}), body: body ? JSON.stringify(body) : undefined});
+  if (r.status === 401) throw new Error("the app key doesn't match your sync service");
+  return {status: r.status, body: await r.json().catch(() => ({}))};
+}
+const fail$ = r => new Error((r.body && r.body.error) || 'the sync service answered ' + r.status);
+
+function cloudLater(ms) {
+  clearTimeout(cloudTimer);
+  cloudTimer = setTimeout(() => { cloudTimer = null; cloudUpload(false); }, ms);
+}
+/** every change to the board: back up 20 seconds after the last edit, at most every 2 minutes */
+function cloudChanged() {
+  if (cloudLoading || !cloudOn()) return;
+  if (!cloudDirtyAt) cloudDirtyAt = Date.now();
+  const last = (cloudConf() || {}).last, since = last ? Date.now() - last.at : Infinity;
+  cloudLater(Math.max(20000, 120000 - since));
+}
+async function cloudUpload(force = false) {
+  if (!cloudOn() || cloudBusy) return null;
+  cloudBusy = true; clearTimeout(cloudTimer); cloudTimer = null;
+  try {
+    const c = cloudConf(), dev = device(), docs = store.dump(), hash = await boardHash(docs);
+    if (!force && c.last && c.last.hash === hash) { cloudDirtyAt = 0; return {same: true}; }
+    const blob = await seal({app: 'debt-slayer', v: 1, savedAt: Date.now(), from: dev.label, docs}, c);
+    const r = await cloudFetch('/v1/backup', {method: 'PUT', body: {blob, base: c.last ? c.last.id : null, device: dev.id, label: dev.label, force}});
+    if (r.status === 409) { cloudErr = null; openCloudConflict(r.body.latest); return null; }
+    if (r.status === 429) { cloudLater(15000); return null; }
+    if (r.status !== 200) throw fail$(r);
+    writeJSON(CLOUD_KEY, Object.assign(cloudConf(), {last: {id: r.body.id, at: Date.now(), hash, from: dev.label}}));
+    cloudErr = null; cloudDirtyAt = 0;
+    return r.body;
+  } catch (e) { cloudErr = (e && e.message) || String(e); console.warn('cloud', e); cloudLater(5 * 60000); return null; }
+  finally { cloudBusy = false; scheduleRender(); }
+}
+/** put a backup's board on this device. meta: {id, label, created_at}; blob if already downloaded */
+async function cloudLoad(meta, auto, blob) {
+  if (!blob) { const r = await cloudFetch('/v1/backup?id=' + encodeURIComponent(meta.id)); if (r.status !== 200) throw fail$(r); blob = r.body.blob; }
+  const board = await unseal(blob, cloudConf());
+  if (!board || !board.docs || !board.docs['fin/settings']) throw new Error('That backup has no board in it.');
+  cloudLoading = true;
+  try { store.load(board.docs); } finally { cloudLoading = false; }
+  writeJSON(CLOUD_KEY, Object.assign(cloudConf(), {last: {id: meta.id, at: Date.now(), hash: await boardHash(board.docs), from: meta.label}}));
+  cloudDirtyAt = 0; cloudErr = null; cloudPending = null;
+  const lab = meta.label || 'device', from = lab === device().label ? 'other ' + lab : lab;
+  toast(auto ? `Updated from your ${esc(from)} · saved ${esc(agoIso(meta.created_at))}` : 'Board restored from your cloud backup');
+  return board;
+}
+/** on open: if another device saved a newer board, load it, or ask when this one changed too */
+async function cloudCheck() {
+  if (!cloudOn()) return;
+  cloudLastCheck = Date.now();
+  try {
+    const r = await cloudFetch('/v1/backup?meta=1');
+    if (r.status === 404) { cloudChanged(); return; }
+    if (r.status !== 200) throw fail$(r);
+    const meta = r.body, c = cloudConf();
+    if ((c.last && c.last.id === meta.id) || meta.device === device().id) return;
+    const here = await boardHash(store.dump());
+    if (c.last && c.last.hash === here) await cloudLoad(meta, true);
+    else openCloudConflict(meta);
+  } catch (e) { cloudErr = (e && e.message) || String(e); console.warn('cloud', e); scheduleRender(); }
+}
+function openCloudConflict(meta) {
+  cloudPending = meta;
+  const dev = device(), lab = (meta && meta.label) || 'device', other = esc(lab === dev.label ? 'other ' + lab : lab);
+  openSheet(sheetHead('Two versions of your board') + `<div class="form">
+    <p>Your board changed on this ${esc(dev.label)} and on your ${other} (saved ${esc(agoIso(meta.created_at))}). Which one should every device use?</p>
+    <div class="stack"><button type="button" class="btn gold" data-act="cloudtheirs">Use the ${other} board</button><button type="button" class="btn" data-act="cloudmine">Keep this ${esc(dev.label)}'s board</button></div>
+    <p class="small muted">Keep this one: the ${other} version stays in Earlier backups. Use the ${other} board: changes made here since the last backup are dropped.</p></div>`);
+}
+function cloudStatus() {
+  const c = cloudConf() || {};
+  if (cloudErr) return `<span class="bad">Backup failed: ${esc(cloudErr)}</span>`;
+  if (!c.last) return 'Not backed up yet';
+  return `Backed up ${esc(agoIso(new Date(c.last.at).toISOString()))}${cloudDirtyAt ? ' · new changes waiting' : ''}`;
+}
+function cloudSettings() {
+  if (!store || store.kind !== 'local') return '';
+  if (!liveOn()) return `<h2>Cloud backup</h2><p class="small muted">Connect live bank sync above first. Your sync service keeps the backup too.</p>`;
+  if (cloudOn()) return `<h2>Cloud backup</h2>
+    <p class="small muted">On. Your board is locked with your passphrase on this device, then kept by your sync service. Your other devices load the newest board when they open.</p>
+    <p class="hint" id="cb-status">${cloudStatus()}</p>
+    <div class="formrow"><button type="button" class="btn" data-act="cloudnow">Back up now</button><button type="button" class="btn" data-act="cloudlist">Earlier backups</button></div>
+    <div><button type="button" class="btn ghost danger" data-act="cloudoff">Turn off on this device</button></div>`;
+  return `<h2>Cloud backup</h2>
+    <p class="small muted">Keep a locked copy of your whole board on your sync service, and the same board on every device. It's locked here with a passphrase you choose, so nobody else can open it: not Cloudflare, and not anyone who has your app key.</p>
+    <form class="form" data-form="cloud">
+      <label class="fld" for="cb-pass"><span>Passphrase</span><input type="password" id="cb-pass" name="pass" autocomplete="new-password"><small>At least 10 characters; four random words work well. Use the same one on every device.</small></label>
+      <label class="fld" for="cb-pass2"><span>Type it again</span><input type="password" id="cb-pass2" name="pass2" autocomplete="new-password"></label>
+      <p class="small muted">If you forget it, nobody can open the cloud copy, not even you. Save it in your password manager.</p>
+      <p class="err" id="cb-err" hidden></p>
+      <button class="btn gold wide">Turn on cloud backup</button>
+    </form>`;
+}
+function openCloudRestore() {
+  openSheet(sheetHead('Restore from cloud backup') + `<form class="form" data-form="cloudrestore">
+    <p class="small muted">Bring your board over from another device. You need your sync service address, its app key and your backup passphrase.</p>
+    <label class="fld" for="cr-url"><span>Sync service address</span><input type="text" id="cr-url" name="url" placeholder="https://debt-slayer-sync.you.workers.dev" autocomplete="off" inputmode="url"></label>
+    <label class="fld" for="cr-key"><span>App key</span><input type="password" id="cr-key" name="key" autocomplete="off"><small>Kept only on this device.</small></label>
+    <label class="fld" for="cr-pass"><span>Backup passphrase</span><input type="password" id="cr-pass" name="pass" autocomplete="current-password"></label>
+    <p class="err" id="cr-err" hidden></p>
+    <button class="btn gold wide">Restore my board</button></form>`);
+}
+async function openCloudList() {
+  openSheet(sheetHead('Earlier backups') + `<div id="cb-list"><p class="muted">Loading…</p></div>`);
+  try {
+    const r = await cloudFetch('/v1/backups'); if (r.status !== 200) throw fail$(r);
+    const last = (cloudConf() || {}).last, box = $('#cb-list'); if (!box) return;
+    box.innerHTML = `<p class="small muted">The latest 10, plus the last one of each day for a month. Restoring one puts that board on every device.</p><div class="stack">${(r.body.backups || []).map(b => `
+      <div class="formrow" style="justify-content:space-between;align-items:center"><span><b>${esc(whenIso(b.created_at))}</b><br><small class="muted">${esc(b.label || 'device')} · ${Math.max(1, Math.round((b.size || 0) / 1024))} KB${last && last.id === b.id ? ' · on this device now' : ''}</small></span>
+      <button type="button" class="btn sm" style="flex:none" data-act="cloudpick" data-id="${esc(b.id)}" data-label="${esc(b.label || '')}" data-at="${esc(b.created_at)}">Restore</button></div>`).join('') || '<p class="muted">No backups yet.</p>'}</div>`;
+  } catch (e) { const box = $('#cb-list'); if (box) box.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }
 
 /* ----- search ----- */
@@ -2171,6 +2366,7 @@ function openSettings() {
     <fieldset class="fld"><legend>Account names</legend><div class="stack">${accts().map(a => `<input type="text" name="an_${esc(a.id)}" id="an-${esc(a.id)}" value="${esc(a.name)}" aria-label="Name for ${esc(a.id)}">`).join('')}</div></fieldset>
     <button class="btn gold wide">Save settings</button></form>
     <div class="stack" style="margin-top:22px">${liveSettings()}</div>
+    <div class="stack" style="margin-top:22px">${cloudSettings()}</div>
     <div class="form" style="margin-top:22px">
       <label class="fld" for="s-backup"><span>Backup</span><textarea id="s-backup" readonly>${esc(backup)}</textarea><small>Copy this somewhere safe. Paste a backup below to restore it.</small></label>
       <div class="formrow"><button type="button" class="btn" data-act="copybackup">Copy backup</button></div>
@@ -2240,6 +2436,20 @@ const ACTIONS = {
   level: () => openLevel(),
   hydrafrom: b => openHydraFrom(b.dataset.group),
   livesync: b => { b.disabled = true; b.textContent = 'Syncing…'; liveSync(true).then(r => { closeSheet(); liveToast(r); }); },
+  cloudnow: b => {
+    b.disabled = true; b.textContent = 'Backing up…';
+    cloudUpload(false).then(r => { b.disabled = false; b.textContent = 'Back up now'; const st = $('#cb-status'); if (st) st.innerHTML = cloudStatus(); if (r) toast(r.same ? 'Already backed up' : 'Backed up'); else if (cloudErr) toast('Backup failed: ' + esc(cloudErr), 'bad'); });
+  },
+  cloudlist: () => openCloudList(),
+  cloudpick: b => {
+    if (!b.dataset.armed) { b.dataset.armed = '1'; b.textContent = 'Tap again to restore'; return; }
+    closeSheet();
+    cloudLoad({id: b.dataset.id, label: b.dataset.label, created_at: b.dataset.at}, false).then(() => cloudUpload(true)).catch(e => toast(esc(e.message), 'bad'));
+  },
+  cloudoff: () => { writeJSON(CLOUD_KEY, null); cloudErr = null; cloudDirtyAt = 0; clearTimeout(cloudTimer); closeSheet(); scheduleRender(); toast('Cloud backup is off on this device. Your backups stay on your sync service.'); },
+  cloudtheirs: () => { const m = cloudPending; closeSheet(); if (m) cloudLoad(m, false).catch(e => toast(esc(e.message), 'bad')); },
+  cloudmine: () => { closeSheet(); cloudPending = null; cloudUpload(true).then(r => { if (r) toast('Saved. Every device will use this board.'); }); },
+  cloudrestore: () => openCloudRestore(),
   liveoff: () => { try { localStorage.removeItem(LIVE_KEY); } catch (e) {} liveErr = null; closeSheet(); toast('This device is disconnected. Your bank data stays on your sync service.'); scheduleRender(); },
   boss: b => openBoss(b.dataset.id),
   penny: () => toast(pennyTip()),
@@ -2319,6 +2529,49 @@ const FORMS = {
     if (!r) { if (btn) { btn.disabled = false; btn.textContent = 'Try again'; } return er(`Sync failed: ${liveErr}`); }
     closeSheet(); liveToast(r);
     if (first) setTimeout(() => { openSettings(); const b = $('#lv-url'); if (b) b.scrollIntoView({block: 'center'}); }, 400);
+  },
+  async cloud(f, fd) {
+    const er = m => { const e = $('#cb-err'); if (e) { e.textContent = m; e.hidden = false; } };
+    const pass = String(fd.get('pass') || ''), btn = f.querySelector('button.gold');
+    if (pass.length < 10) return er('Use at least 10 characters.');
+    if (pass !== String(fd.get('pass2') || '')) return er("The two passphrases don't match.");
+    btn.disabled = true; btn.textContent = 'Locking…';
+    try {
+      const r = await cloudFetch('/v1/backup');
+      if (r.status === 200) {
+        // a backup is already there (from another device): the passphrase has to open it
+        const kc = await keyForEnvelope(pass, r.body.blob);
+        await unseal(r.body.blob, kc);
+        writeJSON(CLOUD_KEY, {k: kc.k, salt: kc.salt, iter: kc.iter, last: null});
+        closeSheet();
+        if (!ITEMS.length && !TXNS.length) await cloudLoad(r.body, false, r.body.blob); else openCloudConflict(r.body);
+        return;
+      }
+      if (r.status !== 404) throw fail$(r);
+      writeJSON(CLOUD_KEY, Object.assign(await newLockKey(pass), {last: null}));
+      if (!(await cloudUpload(true))) { const m = cloudErr || 'the upload failed'; writeJSON(CLOUD_KEY, null); throw new Error(m); }
+      closeSheet(); scheduleRender(); toast('Cloud backup is on');
+    } catch (e) { btn.disabled = false; btn.textContent = 'Turn on cloud backup'; er(e.message || String(e)); }
+  },
+  async cloudrestore(f, fd) {
+    const er = m => { const e = $('#cr-err'); if (e) { e.textContent = m; e.hidden = false; } };
+    const url = String(fd.get('url') || '').trim().replace(/\/+$/, ''), key = String(fd.get('key') || '').trim(), pass = String(fd.get('pass') || ''), btn = f.querySelector('button.gold');
+    if (!/^https:\/\/|^http:\/\/localhost(:\d+)?$/.test(url)) return er('Paste the https:// address of your sync service.');
+    if (!key || !pass) return er('Type the app key and your backup passphrase.');
+    btn.disabled = true; btn.textContent = 'Unlocking…';
+    try {
+      const r = await cloudFetch('/v1/backup', {url, key});
+      if (r.status === 404) throw new Error('There is no cloud backup on that sync service yet. Turn it on in Settings on the device that has your board.');
+      if (r.status !== 200) throw fail$(r);
+      const kc = await keyForEnvelope(pass, r.body.blob), board = await unseal(r.body.blob, kc);
+      if (!board.docs || !board.docs['fin/settings']) throw new Error('That backup has no board in it.');
+      try { localStorage.setItem(LIVE_KEY, key); } catch (e) { throw new Error("This browser won't keep the key."); }
+      writeJSON(CLOUD_KEY, {k: kc.k, salt: kc.salt, iter: kc.iter, last: {id: r.body.id, at: Date.now(), hash: await boardHash(board.docs), from: r.body.label}});
+      cloudLoading = true;
+      try { store.load(board.docs); } finally { cloudLoading = false; }
+      cloudTried = true;
+      closeSheet(); toast(`Your board is here, from your ${esc(r.body.label || 'other device')} (saved ${esc(agoIso(r.body.created_at))})`);
+    } catch (e) { btn.disabled = false; btn.textContent = 'Restore my board'; er(e.message || String(e)); }
   },
   search() { const i = $('#q-search'); if (i) i.blur(); },
   spend(f, fd) {
@@ -2504,7 +2757,8 @@ function owedPreview() {
   el.innerHTML = `<b>${n} payment${n > 1 ? 's' : ''}</b>${Math.abs(last - amt) >= 0.005 ? ` (${n - 1} × ${eur(amt)} and a last one of ${eur(last)})` : ` of ${eur(amt)}`}. Last one ${lastD ? fmtD(lastD) : '—'}.`;
 }
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) return;
+  if (document.hidden) { if (cloudDirtyAt && cloudOn()) cloudUpload(false); return; }
+  if (cloudOn() && !cloudGate && Date.now() - cloudLastCheck > 60000) cloudGate = cloudCheck().finally(() => { cloudGate = null; });
   if (isoOf(new Date()) !== T) scheduleRender();
   if (liveOn() && Date.now() - (S.live.lastAt || 0) > 3 * 60000) liveSync(true).then(r => liveToast(r, true));
 });
@@ -2535,6 +2789,7 @@ function attach() {
   store.watchColl('items', list => { ITEMS = list; got.i = true; scheduleRender(); }, err);
   store.watchColl('txns', list => { TXNS = list; got.t = true; scheduleRender(); }, err);
   store.watchDoc('fin/live', d => { LIVE = {seen: (d && d.seen) || {}}; }, err);
+  if (store.onChange) store.onChange(cloudChanged); // back up changes (this browser's store only)
 }
 
 /* ---------- tests and QA: test/harness.js runs this file with no page and drives the engine through API ---------- */
@@ -2544,6 +2799,8 @@ const API = {
   useLocalStore: () => { store = localStore(); attach(); return store; },
   compute, occ, rawOcc, project, monthStats, debtOf, bosses, simulate, progress, unlocks,
   matchName, guessCat, guessSrc, applyFeed, num, exportAll, importAll,
+  cloud: {seal, unseal, newLockKey, keyForEnvelope, boardHash, upload: cloudUpload, check: cloudCheck, load: cloudLoad, conf: cloudConf, device,
+    state: () => ({cloudErr, cloudPending, cloudDirtyAt, cloudTimer: !!cloudTimer}), store: () => store},
 };
 if (window.__dsTest) { headless = true; window.__dsTest(API); }
 else { if (window.__dsQA) window.__qa = API; boot(); }

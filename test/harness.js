@@ -56,7 +56,8 @@ export async function load({ today, board = {}, storage = {}, fetch } = {}) {
     fetch: fetch || (async () => { throw new Error('no network in tests'); }),
     document: nothing(),
     console,
-    setTimeout, clearTimeout,
+    // timers the app leaves waiting (a backup in 20 seconds) must not keep the test run open
+    setTimeout: (f, ms, ...a) => { const t = setTimeout(f, ms, ...a); t.unref(); return t; }, clearTimeout,
     setInterval: () => 0, clearInterval: () => {},
     crypto: globalThis.crypto, TextEncoder, TextDecoder, btoa, atob,
     CompressionStream, DecompressionStream, Blob, Response,
