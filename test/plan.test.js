@@ -16,7 +16,7 @@ async function plan(extraMarks = {}) {
 
 test('a reminder the morning a bill is due, and a check two days later on synced accounts', async () => {
   const { list } = await plan();
-  const ids = [...list.map(r => r.id)];
+  const ids = [...list.filter(r => r.kind === 'due' || r.kind === 'late').map(r => r.id)];
   assert.deepEqual(ids, [
     'late:resend@2026-11-08:2026-11-08',
     'late:rent@2026-11-09:2026-11-09',
@@ -50,4 +50,31 @@ test('the words to look for come from the name, the aliases and your own match w
   const { app } = await plan();
   assert.equal(app.matchWords({ name: 'Claude Business' }).join(), 'claude,anthropic');
   assert.equal(app.matchWords({ name: 'Gym', match: 'Urban Sports, USC' }).join(), 'gym,urban sports,usc');
+});
+
+test('"Boss down" waits for the last payment of a debt on a synced account', async () => {
+  const s = settings({ live: { url: 'https://sync.test', since: '2026-11-01', map: { 'mock:qonto': 'qonto', 'mock:wise:EUR': 'wise' } } });
+  const klarna = { name: 'Dyson', group: 'Klarna', amt: 85, cur: 'EUR', freq: 'monthly', start: '2026-09-20', day: 20, count: 3, acct: 'wise', debt: true, cat: 'Klarna' };
+  const app = await load({ today: TODAY, board: board({ settings: s, items: { dyson: klarna } }) });
+  const win = [...app.buildPlan()].filter(r => r.kind === 'win');
+  assert.equal(win.length, 1);
+  assert.equal(win[0].id, 'win:dyson@2026-11-20');
+  assert.equal(win[0].title, 'Boss down: Klarna · Dyson');
+  assert.equal(win[0].at, local(2026, 11, 16, 0));
+  assert.equal(win[0].until, local(2026, 11, 30, 0));
+  assert.equal(win[0].check.cents, 8500);
+  assert.equal(win[0].check.words.join(), 'dyson,klarna');
+});
+
+test('an 8pm streak check for each day this week, with today\'s spending and the bills to leave out', async () => {
+  const { list } = await plan();
+  const days = list.filter(r => r.kind === 'streak');
+  assert.equal(days.length, 7);
+  assert.equal(days[0].id, 'streak:2026-11-10');
+  assert.equal(days[0].at, local(2026, 11, 10, 20));
+  assert.equal(days[0].day.accounts.join(), 'mock:qonto,mock:wise:EUR');
+  assert.ok(days[0].day.limit > 0);
+  // bills within a day of today, ticked or not, so their card charges never count as spending
+  assert.equal(days[0].day.skip.map(b => b.cents).join(), '90000,1800', 'Rent (yesterday) and Claude (today)');
+  assert.equal(days[1].day.spent, 0);
 });

@@ -107,8 +107,8 @@ rep("""  if (e.target.name === 'freq') {""",
 
 # ---- first run: restore button next to "Start a blank board" ----
 rep("""You can also paste a backup from Settings.</p><button class="btn gold" data-act="blank">${px('plus')} Start a blank board</button></div>`;""",
-    """Moving from another device? Restore your cloud backup or a backup file.</p><div class="row"><button class="btn gold" data-act="cloudrestore">${px('lock')} From cloud backup</button><button class="btn" data-act="restore">${px('arrow')} From a file</button><button class="btn" data-act="blank">${px('plus')} Start a blank board</button></div></div>`;""")
-rep("Start a blank board, then add your income, bills and debts from the Bills tab.", "Start a blank board and add your income, bills and debts from the Bills tab.")
+    """Moving from another device? Restore your cloud backup or a backup file.</p><div class="row"><button class="btn gold" data-act="cloudrestore">${px('lock')} From cloud backup</button><button class="btn" data-act="restore">${px('arrow')} From a file</button><button class="btn" data-act="blank">${px('plus')} Set up a new board</button></div></div>`;""")
+rep("Start a blank board, then add your income, bills and debts from the Bills tab.", "New here? Set up your board in four short steps: accounts, pay and bills.")
 
 # ---- device-only banner and weekly backup nudge on HQ ----
 rep("""main.innerHTML = html + (store.kind === 'local' ? `<p class="banner">Saved in this browser only.</p>` : '');""",

@@ -16,6 +16,9 @@ It then opens full screen like a normal app and works offline.
 - Everything you enter is kept **on the device**, in the browser's storage. This repository contains no personal data.
 - **Cloud backup** (Settings, after connecting your sync service): the board is locked on the device with a passphrase you choose (PBKDF2 + AES-GCM), then kept by your own sync service. Nobody else can open it. Every device with the passphrase loads the newest board when it opens; if two devices both changed it, the app asks which one to keep. **Earlier backups** goes back a month.
 - **Notifications** (Settings, after connecting your sync service): money in and out on your connected accounts, bills due or not gone out, and banks that stop syncing. They're encrypted for each device. For bill reminders, the next two weeks of bills (name, amount, date) go to your sync service.
+- **Pull down to refresh:** at the top of any screen, pull down and let go (or hold a moment) to sync with your banks and your other devices.
+- **Repeating charges** (Bills tab, with live sync): subscriptions and plans your bank shows coming back, offered as bills in one tap.
+- **First run:** "Set up a new board" walks through name and cushion, accounts and balances, pay, and common bills.
 - New device: open the app, tap **From cloud backup**, and enter the sync address, app key and passphrase.
 - Without cloud backup, use **Settings → Save backup file** and **Restore a backup**. On iPhone, deleting the home-screen icon also deletes its data, so save a file every week; the app reminds you.
 
@@ -45,4 +48,4 @@ The tests load the real app script in Node with no page (`test/harness.js`) and 
 | `icons/` | App icons, drawn by `tools/make_icons.py` |
 | `tools/build.py` | Builds `index.html` and `sw.js` from the source |
 | `tools/qa.py` | A QA copy with a date override and the engine on `window.__qa` |
-| `test/` | Engine tests: the daily limit, live bank matching and cloud backup |
+| `test/` | Engine tests: the daily limit, live bank matching, cloud backup, reminders, repeating charges, setup and the streak |
