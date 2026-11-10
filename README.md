@@ -47,6 +47,7 @@ The tests load the real app script in Node with no page (`test/harness.js`) and 
 | `index.html` | The built phone app (do not edit by hand) |
 | `sw.js` | Service worker that keeps the app working offline |
 | `manifest.webmanifest` | Name, colours and icons for "Add to Home Screen" |
+| `privacy.html` | Privacy policy, linked from the Google sign-in page for Gmail receipts |
 | `icons/` | App icons, drawn by `tools/make_icons.py` |
 | `tools/build.py` | Builds `index.html` and `sw.js` from the source |
 | `tools/qa.py` | A QA copy with a date override and the engine on `window.__qa` |
