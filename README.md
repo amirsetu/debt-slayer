@@ -19,6 +19,7 @@ It then opens full screen like a normal app and works offline.
 - **Sparkasse** (Settings › Live bank sync, once your sync service has Enable Banking set up): pick your Sparkasse, log in on its page with S-pushTAN, and it syncs like the other banks.
 - **Pull down to refresh:** at the top of any screen, pull down and let go (or hold a moment) to sync with your banks and your other devices.
 - **Repeating charges** (Bills tab, with live sync): subscriptions and plans your bank shows coming back, offered as bills in one tap.
+- **Receipts** (History › Receipts, once your sync service has Gmail set up): invoices from your Gmail inboxes land on the bank payment they belong to; business or private per account or per payment; add a photo or PDF for the rest, or mark a payment as needing none. **Export** a month, quarter or year as one ZIP with every file and a spreadsheet, for your tax return. Receipts and the archived emails are kept by your own sync service.
 - **First run:** "Set up a new board" walks through name and cushion, accounts and balances, pay, and common bills.
 - New device: open the app, tap **From cloud backup**, and enter the sync address, app key and passphrase.
 - Without cloud backup, use **Settings → Save backup file** and **Restore a backup**. On iPhone, deleting the home-screen icon also deletes its data, so save a file every week; the app reminds you.

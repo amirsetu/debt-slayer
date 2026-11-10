@@ -129,6 +129,13 @@ main{padding-block:16px calc(110px + env(safe-area-inset-bottom,0px))}
 .tag.biz{color:var(--boss);border-color:var(--boss-soft);background:var(--boss-soft)}
 .tag.debt{color:var(--hit);border-color:var(--hit-soft);background:var(--hit-soft)}
 .tag.guess{color:var(--warn);border-color:var(--warn-soft);background:var(--warn-soft)}
+.tag.ok{color:var(--loot);border-color:var(--loot-soft);background:var(--loot-soft)}
+.tag.miss{color:var(--hit);border-color:var(--hit-soft);background:var(--hit-soft)}
+.ev.rc-ok .ev-ico{color:var(--loot);background:var(--loot-soft)}
+.ev.rc-miss .ev-ico{color:var(--hit);background:var(--hit-soft)}
+.vh{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.rc-doc{display:block;width:100%;max-height:70vh;border:2px solid var(--edge);border-radius:14px;background:#fff}
+iframe.rc-doc{height:60vh}
 
 /* bars */
 .hp{height:16px;border:2px solid var(--edge);border-radius:999px;background:var(--panel-2);overflow:hidden;position:relative}
@@ -1550,6 +1557,7 @@ function billRow(i) {
 /* ----- Log ----- */
 function vLog() {
   const m = logMonth || ym(T);
+  if (logMode === 'rc') return vReceipts(m);
   const from = m + '-01', to = monthEnd(from);
   const st = monthStats(m);
   const list = TXNS.filter(t => t.date >= from && t.date <= to).map(t => ({date: t.date, at: t.at || 0, out: t.kind === 'exp' || t.kind === 'pay' ? +t.eur || 0 : 0, inn: t.kind === 'inc' ? +t.eur || 0 : 0, html: txnRow(t)}))
@@ -1567,7 +1575,7 @@ function vLog() {
     html += r.html;
   });
   if (cur) html += '</ul>';
-  return `<div class="twocol">
+  return logSeg() + `<div class="twocol">
     <div class="stack" style="gap:18px">
       <div class="pn stack">
         <div class="monthbar"><button class="iconbtn" data-act="logmove" data-k="-1" aria-label="Previous month">‹</button><h2>${fmtM(m)}</h2><button class="iconbtn" data-act="logmove" data-k="1" aria-label="Next month" ${m >= ym(T) ? 'disabled' : ''}>›</button></div>
@@ -1983,7 +1991,7 @@ function liveSettings() {
       <div class="formrow"><button class="btn gold">${on ? 'Save' : 'Connect'}</button>${on ? `<button type="button" class="btn" data-act="livesync">Sync now</button>` : ''}</div>
       ${on ? `<div><button type="button" class="btn ghost danger" data-act="liveoff">Disconnect this device</button></div>` : ''}
     </form>
-    ${on ? ebBlock() : ''}`;
+    ${on ? ebBlock() + gmBlock() : ''}`;
 }
 
 /* ----- cloud backup -----
@@ -2356,6 +2364,281 @@ function ebReturned() {
   if (!at || Date.now() - at > 30 * 60000) return;
   writeJSON(EB_PENDING, null);
   setTimeout(() => { loadEb(true); refreshAll(); }, 2500);
+}
+
+/* ----- receipts -----
+   Invoices and receipts from your Gmail inboxes (and photos you take), matched by your sync service to the bank payment
+   they belong to. Exports for a month, a quarter or a year: every file plus a spreadsheet, as one ZIP built here on the phone. */
+let RC = {key: '', at: 0, data: null, busy: null, err: ''}, GM = {at: 0, data: null, busy: false}, RX = null, logMode = 'all', rcFilter = 'business';
+const READ_BY = {email: 'read from the email', haiku: 'read by Claude', manual: 'added by you'};
+const rcRange = m => ({from: m + '-01', to: monthEnd(m + '-01')});
+function loadReceipts(m, force) {
+  const {from, to} = rcRange(m), key = from + '|' + to;
+  if (!liveOn()) return Promise.resolve(null);
+  if (RC.busy && RC.busyKey === key) return RC.busy;
+  if (!force && RC.key === key && Date.now() - RC.at < 5 * 60000) return Promise.resolve(RC.data);
+  const p = cloudFetch(`/v1/receipts?from=${from}&to=${to}`).then(r => { if (r.status !== 200) throw fail$(r); RC = {key, at: Date.now(), data: r.body, busy: null, err: ''}; return r.body; })
+    .catch(e => { RC = {key, at: Date.now(), data: RC.key === key ? RC.data : null, busy: null, err: e.message || String(e)}; return null; })
+    .finally(scheduleRender);
+  RC.busy = p; RC.busyKey = key;
+  return p;
+}
+const rcShown = (d, f = rcFilter) => ((d && d.payments) || []).filter(p => f === 'all' || (f === 'business') === !!p.business);
+const rcState = p => (p.receipts.length ? 'ok' : p.noReceipt ? 'no' : 'miss');
+const rcMoney = (cents, cur) => cur === 'USD' ? usd(cents / 100, 2) : !cur || cur === 'EUR' ? eur(cents / 100) : `${(cents / 100).toFixed(2)} ${esc(cur)}`;
+const rcEur = list => sum(list.map(p => (p.currency === 'USD' ? p.amount_cents * (+S.fx || 0.86) : p.amount_cents) / 100));
+const rcTag = st => st === 'ok' ? `<span class="tag ok">Receipt</span>` : st === 'no' ? '<span class="tag">Not needed</span>' : '<span class="tag miss">Missing</span>';
+const rcLoose = d => ((d && d.unmatched) || []).filter(r => r.status !== 'not-invoice');
+function rcRow(p) {
+  const st = rcState(p), r = p.receipts[0];
+  const meta = [String(p.accountName || '').split(' · ')[0], p.business ? 'Business' : 'Private', r ? [r.vendor, r.invoice_no].filter(Boolean).join(' · ') : ''].filter(Boolean).join(' · ');
+  return `<li class="ev clickable rc-${st}" data-act="rcpt" data-id="${esc(p.id)}" tabindex="0"><span class="ev-ico">${px(st === 'ok' ? 'check' : 'receipt')}</span><span class="ev-main"><b>${esc(p.payee || 'Payment')}</b><small>${rcTag(st)} ${esc(meta)}</small></span><span class="ev-amt">${rcMoney(p.amount_cents, p.currency)}</span><span class="nobtn"></span></li>`;
+}
+function rcLooseRow(r) {
+  const meta = [r.invoice_date ? fmtD(r.invoice_date) : '', r.subject || '', r.amount_cents == null ? "amount not read" : ''].filter(Boolean).join(' · ');
+  return `<li class="ev clickable" data-act="rcloose" data-id="${esc(r.id)}" tabindex="0"><span class="ev-ico">${px('receipt')}</span><span class="ev-main"><b>${esc(r.vendor || r.sender || 'Receipt')}</b><small>${esc(meta)}</small></span><span class="ev-amt">${r.amount_cents != null ? rcMoney(r.amount_cents, r.currency) : '—'}</span><span class="nobtn"></span></li>`;
+}
+const rcAgo = iso => { const m = Math.round((Date.now() - Date.parse(iso)) / 60000); return !(m >= 0) ? '' : m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : rel(iso.slice(0, 10)); };
+const logSeg = () => `<div class="seg" role="group" aria-label="Show"><button type="button" data-act="logmode" data-m="all" aria-pressed="${logMode !== 'rc'}">Everything</button><button type="button" data-act="logmode" data-m="rc" aria-pressed="${logMode === 'rc'}">${px('receipt')} Receipts</button></div>`;
+function vReceipts(m) {
+  const bar = `<div class="monthbar"><button class="iconbtn" data-act="logmove" data-k="-1" aria-label="Previous month">‹</button><h2>${fmtM(m)}</h2><button class="iconbtn" data-act="logmove" data-k="1" aria-label="Next month" ${m >= ym(T) ? 'disabled' : ''}>›</button></div>`;
+  if (!liveOn()) return logSeg() + `<section class="pn stack"><h2>Receipts</h2><p class="muted">Connect your sync service and your Gmail in Settings. Invoices then land on the bank payment they belong to, ready to export for your tax return.</p><div><button class="btn" data-act="settings">Open Settings</button></div></section>`;
+  loadReceipts(m, false);
+  const {from, to} = rcRange(m), d = RC.key === from + '|' + to ? RC.data : null;
+  if (!d) return logSeg() + `<div class="pn stack">${bar}${RC.err && RC.key === from + '|' + to ? `<p class="err">Couldn't load receipts: ${esc(RC.err)}</p><div><button class="btn sm" data-act="rcreload">Try again</button></div>` : '<p class="muted">Loading receipts…</p>'}</div>`;
+  const list = rcShown(d), ok = list.filter(p => rcState(p) === 'ok'), miss = list.filter(p => rcState(p) === 'miss'), loose = rcLoose(d);
+  const fb = (id, label) => `<button class="fbtn" data-act="rfilter" data-f="${id}" aria-pressed="${rcFilter === id}">${label}</button>`;
+  const st = d.status, inb = d.inboxes || [];
+  const scan = inb.length ? `${inb.map(i => esc(i.email)).join(', ')}${st && st.at ? ` · checked ${rcAgo(st.at)}` : ''}${st && st.left ? ` · ${st.left} email${st.left > 1 ? 's' : ''} still to read` : ''}` : '';
+  let html = '', cur = null;
+  list.forEach(p => {
+    if (p.date !== cur) { if (cur) html += '</ul>'; cur = p.date; html += `<div class="dayhead"><b>${fmtD(p.date)}</b></div><ul class="evlist">`; }
+    html += rcRow(p);
+  });
+  if (cur) html += '</ul>';
+  const mo = +m.slice(5, 7), q = Math.floor((mo - 1) / 3) + 1, y = m.slice(0, 4), early = to < '2026-10-01';
+  return logSeg() + `<div class="twocol">
+    <div class="stack" style="gap:18px">
+      <div class="pn stack">${bar}
+        <div class="row" role="group" aria-label="Which payments">${fb('business', 'Business')}${fb('private', 'Private')}${fb('all', 'All')}</div>
+        <div class="msum"><div><span class="lbl">Payments</span><b>${list.length}</b></div><div><span class="lbl">With receipt</span><b class="good">${ok.length}</b></div><div><span class="lbl">Missing</span><b class="${miss.length ? 'bad' : ''}">${miss.length}</b></div><div><span class="lbl">Total</span><b>${eur(rcEur(list), 0)}</b></div></div>
+        ${list.length ? `<span class="hp sm gold" aria-hidden="true"><i style="width:${((list.length - miss.length) / list.length * 100).toFixed(1)}%"></i></span>` : ''}
+        ${inb.length ? `<p class="small muted" style="margin:0">Gmail: ${scan}</p><div><button type="button" class="btn sm" data-act="rcscan">Check Gmail now</button></div>`
+          : `<p class="hint">No Gmail connected yet. Connect one or both inboxes in Settings and the invoices find their payments by themselves.</p><div><button class="btn sm" data-act="settings">Open Settings</button></div>`}
+      </div>
+      <section class="pn stack"><h2>Export for your tax return</h2>
+        <p class="small muted" style="margin:0">Every ${rcFilter === 'all' ? '' : rcFilter + ' '}receipt as a file, plus a spreadsheet of all payments that shows what's missing. One ZIP to save to Files or send to your tax advisor.</p>
+        <div class="formrow"><button type="button" class="btn" data-act="rcexport" data-span="month">${MO[mo - 1]} ${y}</button><button type="button" class="btn" data-act="rcexport" data-span="quarter">Q${q} ${y}</button><button type="button" class="btn" data-act="rcexport" data-span="year">${y}</button></div>
+        <p class="small muted" style="margin:0">Receipts are collected from 1 October 2026; earlier quarters are already done.</p></section>
+    </div>
+    <div class="stack" style="gap:18px">
+      <section class="sec"><div class="sec-h"><h2>Payments</h2></div><p class="small muted">Tap a payment to see its receipt, add a photo, or mark it as needing none. Moving money between your own accounts isn't listed.</p>
+        ${early ? '<p class="muted">Receipts start in October 2026.</p>' : html || `<p class="muted">No ${rcFilter === 'all' ? '' : rcFilter + ' '}payments in ${MONTHS[mo - 1]}.</p>`}</section>
+      ${loose.length ? `<section class="sec"><div class="sec-h"><h2>Receipts without a payment</h2></div><p class="small muted">Found in Gmail, but no bank payment matched. Paid by a card that isn't connected, or the amount was different. Tap one to attach it.</p><ul class="evlist">${loose.map(rcLooseRow).join('')}</ul></section>` : ''}
+    </div></div>`;
+}
+
+const rcFind = id => { const d = RC.data; return d && d.payments.find(x => x.id === id); };
+function rcFileBtns(r) {
+  return r.files.map(f => `<button type="button" class="btn sm" data-act="rcview" data-file="${esc(f.id)}" data-type="${esc(f.type)}" data-name="${esc(f.name)}">${/pdf/.test(f.type) ? 'View PDF' : /^image\//.test(f.type) ? 'View photo' : 'View email'}</button>`).join('');
+}
+function rcDetail(r) {
+  return [r.invoice_date ? fmtD(r.invoice_date) : '', r.invoice_no ? 'No. ' + r.invoice_no : '', r.vat_cents ? 'VAT ' + rcMoney(r.vat_cents, r.currency) : '', READ_BY[r.read_by] || '', r.inbox || ''].filter(Boolean).map(esc).join(' · ');
+}
+function openRcpt(id) {
+  const p = rcFind(id); if (!p) return;
+  const has = p.receipts.map(r => `<div class="recur"><div><b>${esc(r.vendor || r.subject || 'Receipt')}</b> · ${r.amount_cents != null ? rcMoney(r.amount_cents, r.currency) : 'amount not read'}<small class="muted">${rcDetail(r)}</small></div>
+    <div class="formrow">${rcFileBtns(r)}<button type="button" class="btn sm ghost" data-act="rcunlink" data-id="${esc(r.id)}" data-tx="${esc(p.id)}">Not this one</button></div></div>`).join('');
+  const cands = rcLoose(RC.data).map(r => ({r, off: r.amount_cents == null ? 1e12 : Math.abs(r.amount_cents - p.amount_cents)})).sort((a, b) => a.off - b.off).slice(0, 6);
+  openSheet(sheetHead(esc(p.payee || 'Payment')) + `<div class="form">
+    <p class="hint"><b>${rcMoney(p.amount_cents, p.currency)}</b> · ${fmtD(p.date)} · ${esc(p.accountName)}</p>
+    <div class="seg" role="group" aria-label="For your taxes"><button type="button" data-act="rcbiz" data-tx="${esc(p.id)}" data-v="1" aria-pressed="${!!p.business}">Business</button><button type="button" data-act="rcbiz" data-tx="${esc(p.id)}" data-v="0" aria-pressed="${!p.business}">Private</button></div>
+    ${has || `<p class="muted">${p.noReceipt ? 'Marked as needing no receipt.' : 'No receipt yet.'}</p>`}
+    <div id="rc-view" class="stack"></div>
+    <div class="formrow"><label class="btn ${p.receipts.length ? '' : 'gold'}" for="rc-file">${px('plus')} Add a photo or PDF</label></div>
+    <input type="file" id="rc-file" class="vh" accept="image/*,application/pdf" data-tx="${esc(p.id)}">
+    <p class="err" id="rc-err" hidden></p>
+    ${cands.length && !p.receipts.length ? `<fieldset class="fld"><legend>Or pick one Gmail found</legend><div class="stack">${cands.map(({r}) => `<button type="button" class="btn wide" style="justify-content:space-between;text-align:left" data-act="rclink" data-id="${esc(r.id)}" data-tx="${esc(p.id)}"><span>${esc(r.vendor || r.sender || 'Receipt')}<small class="muted" style="display:block">${r.invoice_date ? fmtD(r.invoice_date) : ''}</small></span><span>${r.amount_cents != null ? rcMoney(r.amount_cents, r.currency) : '—'}</span></button>`).join('')}</div></fieldset>` : ''}
+    <label class="check"><input type="checkbox" id="rc-no" data-tx="${esc(p.id)}" ${p.noReceipt ? 'checked' : ''}> No receipt needed for this one</label>
+  </div>`);
+}
+function openLoose(id) {
+  const r = rcLoose(RC.data).find(x => x.id === id); if (!r) return;
+  const pays = rcShown(RC.data, 'all').filter(p => !p.receipts.length).map(p => ({p, off: r.amount_cents == null ? 0 : Math.abs(r.amount_cents - p.amount_cents)})).sort((a, b) => a.off - b.off).slice(0, 8);
+  openSheet(sheetHead(esc(r.vendor || 'Receipt')) + `<div class="form">
+    <p class="hint"><b>${r.amount_cents != null ? rcMoney(r.amount_cents, r.currency) : 'Amount not read'}</b>${r.subject ? ' · ' + esc(r.subject) : ''}<br><small>${rcDetail(r)}</small></p>
+    <div class="formrow">${rcFileBtns(r)}</div><div id="rc-view" class="stack"></div>
+    ${pays.length ? `<fieldset class="fld"><legend>Attach to a payment in ${MONTHS[+RC.key.slice(5, 7) - 1]}</legend><div class="stack">${pays.map(({p}) => `<button type="button" class="btn wide" style="justify-content:space-between;text-align:left" data-act="rclink" data-id="${esc(r.id)}" data-tx="${esc(p.id)}"><span>${esc(p.payee || 'Payment')}<small class="muted" style="display:block">${fmtD(p.date)} · ${esc(String(p.accountName).split(' · ')[0])}</small></span><span>${rcMoney(p.amount_cents, p.currency)}</span></button>`).join('')}</div></fieldset>` : '<p class="muted">No payment without a receipt this month.</p>'}
+    <div><button type="button" class="btn ghost danger" data-act="rcdrop" data-id="${esc(r.id)}">Not an invoice, hide it</button></div></div>`);
+}
+async function rcFile(id) {
+  const r = await fetch(S.live.url.replace(/\/+$/, '') + '/v1/receipts/file/' + encodeURIComponent(id), {headers: {Authorization: 'Bearer ' + liveKey()}});
+  if (r.status === 401) throw new Error("the app key doesn't match your sync service");
+  if (!r.ok) throw new Error('the sync service answered ' + r.status);
+  return new Uint8Array(await r.arrayBuffer());
+}
+let rcSaving = null;
+async function rcView(b) {
+  const box = $('#rc-view'); if (!box) return;
+  box.innerHTML = '<p class="muted">Opening…</p>';
+  try {
+    const bytes = await rcFile(b.dataset.file), type = b.dataset.type || 'application/octet-stream';
+    rcSaving = {name: b.dataset.name || 'receipt', bytes, type};
+    const url = URL.createObjectURL(new Blob([bytes], {type}));
+    if (/^image\//.test(type)) box.innerHTML = `<img class="rc-doc" src="${url}" alt="Receipt photo">`;
+    else if (/pdf/.test(type)) box.innerHTML = `<iframe class="rc-doc" src="${url}" title="Invoice PDF"></iframe>`;
+    else { box.innerHTML = '<iframe class="rc-doc" sandbox="" title="Receipt email"></iframe>'; box.querySelector('iframe').srcdoc = new TextDecoder().decode(bytes); }
+    box.insertAdjacentHTML('beforeend', `<div><button type="button" class="btn sm" data-act="rcsave">Save or share this file</button></div>`);
+  } catch (e) { box.innerHTML = `<p class="err">${esc(e.message || String(e))}</p>`; }
+}
+/** hand a file to the phone: the share sheet (Save to Files, Mail, AirDrop) where there is one, a download otherwise */
+async function saveBytes(name, bytes, type) {
+  const file = typeof File === 'function' ? new File([bytes], name, {type}) : null;
+  if (file && navigator.canShare && navigator.canShare({files: [file]})) {
+    try { await navigator.share({files: [file], title: name}); return 'shared'; } catch (e) { if (e && e.name === 'AbortError') return 'cancelled'; }
+  }
+  const url = URL.createObjectURL(new Blob([bytes], {type})), a = document.createElement('a');
+  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  return 'downloaded';
+}
+async function rcShrink(file) { // a phone photo, made small enough to keep: 1800 px on the long side, JPEG
+  const bmp = await createImageBitmap(file), k = Math.min(1, 1800 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.82));
+  return new Uint8Array(await blob.arrayBuffer());
+}
+async function rcUpload(file, tx) {
+  const type = file.type || '';
+  let bytes, send;
+  if (/pdf/.test(type)) { bytes = new Uint8Array(await file.arrayBuffer()); send = 'application/pdf'; }
+  else if (/^image\//.test(type)) { bytes = await rcShrink(file); send = 'image/jpeg'; }
+  else throw new Error('Pick a photo or a PDF.');
+  if (bytes.length > 8e6) throw new Error('That file is over 8 MB.');
+  const r = await cloudFetch('/v1/receipts/photo', {method: 'POST', body: {data: toB64(bytes), type: send, tx, name: file.name || 'Photo'}});
+  if (r.status !== 200) throw fail$(r);
+  return r.body;
+}
+/** after a change: fetch the month again, then show the payment's sheet with it */
+async function rcAfter(tx) {
+  await loadReceipts(RC.key.slice(0, 7), true);
+  if (tx && !$('#sheet').hidden) openRcpt(tx);
+}
+function rcPost(path, body, tx, msg) {
+  return cloudFetch(path, {method: 'POST', body}).then(r => { if (r.status !== 200) throw fail$(r); if (msg) toast(msg); return rcAfter(tx); }).catch(e => toast(esc(e.message || String(e)), 'bad'));
+}
+
+/* exports: a ZIP made here (stored, not compressed: PDFs and photos are compressed already) */
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(u8) { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = CRC_T[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function zipStore(entries, when = new Date()) {
+  const enc = new TextEncoder(), parts = [], dir = [];
+  const dt = (when.getHours() << 11) | (when.getMinutes() << 5) | (when.getSeconds() >> 1), dd = ((when.getFullYear() - 1980) << 9) | ((when.getMonth() + 1) << 5) | when.getDate();
+  let off = 0;
+  for (const e of entries) {
+    const name = enc.encode(e.name), crc = crc32(e.data), n = e.data.length, h = new DataView(new ArrayBuffer(30)), c = new DataView(new ArrayBuffer(46));
+    [[0, 0x04034b50, 4], [4, 20, 2], [6, 0x0800, 2], [8, 0, 2], [10, dt, 2], [12, dd, 2], [14, crc, 4], [18, n, 4], [22, n, 4], [26, name.length, 2], [28, 0, 2]]
+      .forEach(([o, v, s]) => (s === 4 ? h.setUint32(o, v, true) : h.setUint16(o, v, true)));
+    [[0, 0x02014b50, 4], [4, 20, 2], [6, 20, 2], [8, 0x0800, 2], [10, 0, 2], [12, dt, 2], [14, dd, 2], [16, crc, 4], [20, n, 4], [24, n, 4], [28, name.length, 2], [30, 0, 2], [32, 0, 2], [34, 0, 2], [36, 0, 2], [38, 0, 4], [42, off, 4]]
+      .forEach(([o, v, s]) => (s === 4 ? c.setUint32(o, v, true) : c.setUint16(o, v, true)));
+    parts.push(new Uint8Array(h.buffer), name, e.data); dir.push(new Uint8Array(c.buffer), name);
+    off += 30 + name.length + n;
+  }
+  const dirLen = dir.reduce((s, x) => s + x.length, 0), end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, entries.length, true); end.setUint16(10, entries.length, true); end.setUint32(12, dirLen, true); end.setUint32(16, off, true);
+  const all = parts.concat(dir, [new Uint8Array(end.buffer)]), out = new Uint8Array(all.reduce((s, x) => s + x.length, 0));
+  let p = 0; for (const x of all) { out.set(x, p); p += x.length; }
+  return out;
+}
+// a spreadsheet that opens straight in Excel or Numbers with German settings: semicolons, decimal commas, UTF-8 with BOM
+const csvCell = v => { let s = v == null ? '' : String(v); if (/^[=+\-@\t\r]/.test(s) && !/^-?\d+(,\d+)?$/.test(s)) s = "'" + s; return /[;"\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+const csvNum = cents => cents == null ? '' : (cents / 100).toFixed(2).replace('.', ',');
+const fileSafe = s => String(s || '').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 50) || 'Receipt';
+const extOf = f => /pdf/.test(f.type) ? 'pdf' : /png/.test(f.type) ? 'png' : /^image\//.test(f.type) ? 'jpg' : /html/.test(f.type) ? 'html' : (String(f.name).match(/\.(\w{2,4})$/) || [])[1] || 'bin';
+function rcSpan(span, m) {
+  const y = m.slice(0, 4), mo = +m.slice(5, 7), q = Math.floor((mo - 1) / 3);
+  if (span === 'year') return {from: y + '-01-01', to: y + '-12-31', label: y};
+  if (span === 'quarter') return {from: `${y}-${pad(q * 3 + 1)}-01`, to: monthEnd(`${y}-${pad(q * 3 + 3)}-01`), label: `${y}-Q${q + 1}`};
+  return {from: m + '-01', to: monthEnd(m + '-01'), label: m};
+}
+/** everything for one export: the list from your sync service, every file, the spreadsheet, one ZIP */
+async function rcExport(span, m, filter, progress = () => {}) {
+  const {from, to, label} = rcSpan(span, m);
+  const r = await cloudFetch(`/v1/receipts?from=${from}&to=${to}`); if (r.status !== 200) throw fail$(r);
+  const d = r.body, pays = rcShown(d, filter).slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)), loose = rcLoose(d);
+  const used = new Set(), uniq = path => { let p = path, i = 2; while (used.has(p)) p = path.replace(/(\.\w+)$/, ` (${i++})$1`); used.add(p); return p; };
+  const jobs = [], rows = [];
+  const folder = p => (filter === 'all' ? (p.business ? 'Business/' : 'Private/') : '') + p.date.slice(0, 7) + '/';
+  for (const p of pays) {
+    const paths = [];
+    p.receipts.forEach(rc => rc.files.forEach(f => { const path = uniq(`${folder(p)}${p.date} ${fileSafe(rc.vendor || p.payee)} ${csvNum(p.amount_cents)} ${p.currency}.${extOf(f)}`); paths.push(path); jobs.push({f, path}); }));
+    const rc = p.receipts[0] || {};
+    rows.push([p.date, p.payee, csvNum(p.amount_cents), p.currency, p.accountName, p.business ? 'Business' : 'Private', p.receipts.length ? 'yes' : p.noReceipt ? 'not needed' : 'MISSING',
+      rc.vendor, csvNum(rc.amount_cents), rc.currency, rc.invoice_date, rc.invoice_no, csvNum(rc.vat_cents), paths.join(' | ')]);
+  }
+  for (const rc of loose) {
+    const paths = rc.files.map(f => { const path = uniq(`Receipts without a payment/${rc.invoice_date || ''} ${fileSafe(rc.vendor)} ${csvNum(rc.amount_cents)} ${rc.currency || ''}.${extOf(f)}`.replace(/\s+\./, '.')); jobs.push({f, path}); return path; });
+    rows.push([rc.invoice_date, '', '', '', '', '', 'receipt only, no payment found', rc.vendor, csvNum(rc.amount_cents), rc.currency, rc.invoice_date, rc.invoice_no, csvNum(rc.vat_cents), paths.join(' | ')]);
+  }
+  const files = [], failed = [];
+  let done = 0, next = 0;
+  progress(0, jobs.length);
+  const worker = async () => {
+    while (next < jobs.length) {
+      const j = jobs[next++];
+      try { files.push({name: j.path, data: await rcFile(j.f.id)}); } catch (e) { failed.push(j.path); }
+      progress(++done, jobs.length);
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+  const head = ['Date', 'Paid to', 'Amount', 'Currency', 'Account', 'Business or private', 'Receipt', 'Invoice from', 'Invoice amount', 'Invoice currency', 'Invoice date', 'Invoice number', 'VAT', 'Files'];
+  const csv = '﻿' + [head].concat(rows).map(r => r.map(csvCell).join(';')).join('\r\n') + '\r\n';
+  const missing = pays.filter(p => rcState(p) === 'miss');
+  const notes = [`Debt Slayer receipts, ${from} to ${to}${filter === 'all' ? '' : ', ' + filter + ' only'}`, `Payments: ${pays.length}. With a receipt: ${pays.filter(p => p.receipts.length).length}. No receipt needed: ${pays.filter(p => rcState(p) === 'no').length}. Missing: ${missing.length}.`,
+    loose.length ? `Receipts without a payment: ${loose.length} (folder "Receipts without a payment").` : '', failed.length ? `Files that could not be fetched: ${failed.join(', ')}` : '',
+    'receipts.csv opens in Excel or Numbers. Moving money between your own accounts is left out.'].filter(Boolean).join('\r\n') + '\r\n';
+  const enc = new TextEncoder();
+  files.sort((a, b) => (a.name < b.name ? -1 : 1));
+  const zip = zipStore([{name: 'receipts.csv', data: enc.encode(csv)}, {name: 'README.txt', data: enc.encode(notes)}].concat(files));
+  return {name: `Debt Slayer receipts ${label}${filter === 'all' ? '' : ' ' + filter}.zip`, bytes: zip, csv, payments: pays.length, withReceipt: pays.filter(p => p.receipts.length).length,
+    notNeeded: pays.filter(p => rcState(p) === 'no').length, missing: missing.length, loose: loose.length, files: files.length, failed: failed.length};
+}
+async function openExport(span) {
+  const m = RC.key ? RC.key.slice(0, 7) : (logMonth || ym(T)), filter = rcFilter, {label} = rcSpan(span, m);
+  RX = null;
+  openSheet(sheetHead('Export ' + esc(label.replace('-Q', ' Q'))) + `<div class="form"><p class="hint" id="rx-prog" role="status">Getting the list of payments…</p><div id="rx-done" class="stack"></div></div>`);
+  try {
+    const out = await rcExport(span, m, filter, (n, of) => { const el = $('#rx-prog'); if (el) el.textContent = of ? `Fetching receipts: ${n} of ${of}` : 'No receipt files in this range.'; });
+    RX = out;
+    const p = $('#rx-prog'), box = $('#rx-done'); if (!p || !box) return;
+    p.innerHTML = `<b>${out.payments} ${filter === 'all' ? '' : filter + ' '}payment${out.payments === 1 ? '' : 's'}</b> · ${out.withReceipt} with a receipt${out.notNeeded ? ` · ${out.notNeeded} need none` : ''} · ${out.missing ? `<span class="bad">${out.missing} missing</span>` : 'none missing'}${out.loose ? ` · ${out.loose} receipt${out.loose > 1 ? 's' : ''} without a payment` : ''}${out.failed ? ` · <span class="bad">${out.failed} file${out.failed > 1 ? 's' : ''} couldn't be fetched</span>` : ''}`;
+    box.innerHTML = `<button type="button" class="btn gold wide" data-act="rxsave">Save the ZIP · ${Math.max(1, Math.round(out.bytes.length / 1024)).toLocaleString('en')} KB</button>
+      <p class="small muted">${out.files} file${out.files === 1 ? '' : 's'} and a spreadsheet (receipts.csv). On iPhone choose "Save to Files", or send it straight to your tax advisor.</p>`;
+  } catch (e) { const p = $('#rx-prog'); if (p) p.innerHTML = `<span class="err">Export failed: ${esc(e.message || String(e))}</span>`; }
+}
+
+/* settings: Gmail inboxes, and which bank accounts are business */
+function loadGm(force) {
+  if (!liveOn() || GM.busy || (!force && Date.now() - GM.at < 5 * 60000)) return;
+  GM.busy = true;
+  cloudFetch('/v1/gmail/status').then(r => { GM = {at: Date.now(), data: r.status === 200 ? r.body : {configured: false, inboxes: []}, busy: false}; })
+    .catch(() => { GM = {at: Date.now(), data: null, busy: false}; })
+    .finally(() => { const box = $('#gm-box'); if (box) box.outerHTML = gmBlock(); });
+}
+function gmBlock() {
+  if (!liveOn()) return '';
+  loadGm(false);
+  const d = GM.data;
+  if (!d) return `<p class="hint" id="gm-box">Checking your sync service for Gmail…</p>`;
+  if (!d.configured) return `<p class="hint" id="gm-box"><b>Receipts from Gmail</b><br>Not set up on your sync service yet. It needs a Google Cloud app with read-only Gmail access; the steps are under "Receipts" in the debt-slayer-sync README.</p>`;
+  const st = d.status;
+  return `<div class="stack" id="gm-box"><b>Receipts from Gmail</b>
+    ${d.inboxes.map(i => `<div class="recur"><div><b>${esc(i.email)}</b><small class="muted">Invoices from ${fmtD(i.from)} on${st && st.at ? ` · checked ${rcAgo(st.at)}` : ''}</small></div><div><button type="button" class="btn sm ghost danger" data-act="gmdrop" data-email="${esc(i.email)}">Disconnect</button></div></div>`).join('')}
+    <div><button type="button" class="btn sm gold" data-act="gmgo">${px('plus')} Connect ${d.inboxes.length ? 'another Gmail' : 'your Gmail'}</button></div>
+    <p class="small muted">Read-only, approved on Google's own page. Only emails that look like an invoice or receipt are kept. ${d.reader ? 'When the total is only inside a PDF, Claude Haiku reads it: a fraction of a cent each, at most 100 a day.' : 'Invoices whose total is only inside a PDF are kept but not read. Add an Anthropic API key to your sync service to read them.'}</p>
+    ${(d.accounts || []).length ? `<fieldset class="fld"><legend>Business or private?</legend><div class="stack">${d.accounts.map((a, i) => `<label class="fld" for="ga-${i}"><span>${esc(a.name)}</span><select id="ga-${i}" data-gmacct="${esc(a.id)}"><option value="business" ${a.type === 'business' ? 'selected' : ''}>Business</option><option value="private" ${a.type === 'private' ? 'selected' : ''}>Private</option></select></label>`).join('')}</div><small>Payments from a business account go into business exports. You can switch single payments under History › Receipts.</small></fieldset>` : ''}
+  </div>`;
 }
 
 /* ----- repeating charges -----
@@ -2808,6 +3091,37 @@ const ACTIONS = {
   // a click, not a form submit: iPhone only shows the permission prompt straight from a tap
   pushon: b => { const f = b.closest('form'); FORMS.push(f, new FormData(f)); },
   ebpick: b => openEbPicker(b.dataset.q),
+  logmode: b => { logMode = b.dataset.m; render(); },
+  rfilter: b => { rcFilter = b.dataset.f; render(); },
+  rcreload: () => loadReceipts(logMonth || ym(T), true),
+  rcpt: b => openRcpt(b.dataset.id),
+  rcloose: b => openLoose(b.dataset.id),
+  rcview: b => rcView(b),
+  rcsave: () => { if (rcSaving) saveBytes(rcSaving.name, rcSaving.bytes, rcSaving.type); },
+  rcunlink: b => { b.disabled = true; rcPost('/v1/receipts/link', {receipt: b.dataset.id, tx: null}, b.dataset.tx, 'Taken off this payment'); },
+  rclink: b => { b.disabled = true; rcPost('/v1/receipts/link', {receipt: b.dataset.id, tx: b.dataset.tx}, b.dataset.tx, 'Receipt attached'); },
+  rcdrop: b => { closeSheet(); rcPost('/v1/receipts/link', {receipt: b.dataset.id, tx: null, drop: true}, null, 'Hidden from your receipts'); },
+  rcbiz: b => { const v = b.dataset.v === '1', p = rcFind(b.dataset.tx); if (p) { p.business = v; openRcpt(p.id); scheduleRender(); } rcPost('/v1/receipts/flag', {tx: b.dataset.tx, business: v}, b.dataset.tx); },
+  rcexport: b => openExport(b.dataset.span),
+  rxsave: () => { if (RX) saveBytes(RX.name, RX.bytes, 'application/zip'); },
+  rcscan: b => {
+    b.disabled = true; b.textContent = 'Checking…';
+    cloudFetch('/v1/receipts/run', {method: 'POST'}).then(r => {
+      if (r.status !== 200) throw fail$(r);
+      const o = r.body || {};
+      toast(o.read ? `${o.read} new receipt${o.read > 1 ? 's' : ''}${o.matched ? ` · ${o.matched} matched` : ''}` : o.left ? `Still reading: ${o.left} to go` : 'No new receipts');
+      return loadReceipts(RC.key ? RC.key.slice(0, 7) : (logMonth || ym(T)), true);
+    }).catch(e => toast(esc(e.message || String(e)), 'bad')).finally(() => { b.disabled = false; b.textContent = 'Check Gmail now'; });
+  },
+  gmgo: b => {
+    b.disabled = true; b.textContent = 'Opening Google…';
+    cloudFetch('/v1/gmail/connect', {method: 'POST'}).then(r => { if (r.status !== 200) throw fail$(r); location.href = r.body.url; }) // Google's page; it sends you back here
+      .catch(e => { b.disabled = false; b.textContent = 'Connect your Gmail'; toast(esc(e.message || String(e)), 'bad'); });
+  },
+  gmdrop: b => {
+    if (!b.dataset.armed) { b.dataset.armed = '1'; b.textContent = 'Tap again to disconnect'; return; }
+    cloudFetch('/v1/gmail/disconnect', {method: 'POST', body: {email: b.dataset.email}}).then(() => { toast(`${esc(b.dataset.email)} disconnected`); loadGm(true); }).catch(e => toast(esc(e.message), 'bad'));
+  },
   ebgo: b => {
     b.disabled = true; b.textContent = 'Opening your bank…';
     cloudFetch('/v1/eb/connect', {method: 'POST', body: {name: b.dataset.name, country: 'DE'}}).then(r => {
@@ -3154,6 +3468,17 @@ document.addEventListener('change', e => {
   if (e.target.id === 'sim-target') { simTarget = e.target.value; $('#sim-out').innerHTML = simOut(); }
   if (e.target.id === 'sim-roll') { simRoll = e.target.checked; $('#sim-out').innerHTML = simOut(); }
   if (e.target.closest('form[data-form="strike"]')) strikePreview();
+  if (e.target.id === 'rc-file' && e.target.files && e.target.files[0]) {
+    const tx = e.target.dataset.tx, er = $('#rc-err');
+    toast('Adding the receipt…');
+    rcUpload(e.target.files[0], tx).then(o => { toast(o.vendor ? `Receipt added · ${esc(o.vendor)}` : 'Receipt added'); return rcAfter(tx); })
+      .catch(err => { if (er) { er.textContent = err.message || String(err); er.hidden = false; } });
+  }
+  if (e.target.id === 'rc-no') { const tx = e.target.dataset.tx, p = rcFind(tx); if (p) p.noReceipt = e.target.checked; scheduleRender(); rcPost('/v1/receipts/flag', {tx, noReceipt: e.target.checked}, null); }
+  if (e.target.dataset && e.target.dataset.gmacct) {
+    cloudFetch('/v1/receipts/accounts', {method: 'PUT', body: {types: {[e.target.dataset.gmacct]: e.target.value}}})
+      .then(r => { if (r.status !== 200) throw fail$(r); toast('Saved'); RC.at = 0; }).catch(err => toast(esc(err.message), 'bad'));
+  }
 });
 document.addEventListener('input', e => {
   if (e.target.id === 'q-search') { searchQ = e.target.value; $('#q-out').innerHTML = searchOut(searchQ); }
@@ -3211,6 +3536,7 @@ async function refreshAll() {
   if (liveOn() && !liveBusy) { const r = await liveSync(true); liveToast(r, false); }
   else if (!liveOn()) toast('Up to date');
   if (S && S.fxAuto !== false) refreshFx(false);
+  if (view === 'log' && logMode === 'rc' && liveOn()) await loadReceipts(RC.key ? RC.key.slice(0, 7) : (logMonth || ym(T)), true);
   scheduleRender();
 }
 async function ptrGo() {
@@ -3273,7 +3599,10 @@ const API = {
   useLocalStore: () => { store = localStore(); attach(); return store; },
   compute, occ, rawOcc, project, monthStats, debtOf, bosses, simulate, progress, unlocks,
   matchName, matchWords, buildPlan, guessCat, guessSrc, applyFeed, num, exportAll, importAll, unmatchBill, bankId, dayLimit, dayOk, liveAlert, setLiveErr: e => { liveErr = e; },
-  refreshAll, untracked, ebBlock, setEb: d => { EB = {at: Date.now(), data: d, busy: false}; }, nextOn, setupBoard, setSetup: v => { SETUP = v; }, addRecurring, setRecurring: items => { RECUR = {at: Date.now(), items, busy: false}; },
+  refreshAll, untracked, ebBlock,
+  receipts: {crc32, zipStore, exportZip: rcExport, span: rcSpan, view: vReceipts, gmBlock, csvCell, load: loadReceipts, rcState,
+    set: (m, d) => { RC = {key: m + '-01|' + monthEnd(m + '-01'), at: Date.now(), data: d, busy: null, err: ''}; }, setGm: d => { GM = {at: Date.now(), data: d, busy: false}; },
+    mode: (m, f) => { logMode = m; if (f) rcFilter = f; }, log: vLog}, setEb: d => { EB = {at: Date.now(), data: d, busy: false}; }, nextOn, setupBoard, setSetup: v => { SETUP = v; }, addRecurring, setRecurring: items => { RECUR = {at: Date.now(), items, busy: false}; },
   cloud: {seal, unseal, newLockKey, keyForEnvelope, boardHash, upload: cloudUpload, check: cloudCheck, load: cloudLoad, conf: cloudConf, device,
     state: () => ({cloudErr, cloudPending, cloudDirtyAt, cloudTimer: !!cloudTimer}), store: () => store},
 };
