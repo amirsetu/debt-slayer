@@ -2400,7 +2400,7 @@ const rcHunt = (p, long) => {
 };
 function rcRow(p) {
   const st = rcState(p), r = p.receipts[0];
-  const meta = [String(p.accountName || '').split(' · ')[0] + (p.via ? ' via ' + String(p.via).split(' · ')[0] : ''), p.business ? 'Business' : 'Private', r ? [r.vendor, r.invoice_no].filter(Boolean).join(' · ') : rcHunt(p)].filter(Boolean).join(' · ');
+  const meta = [String(p.accountName || '').split(' · ')[0] + (p.via ? ' via ' + String(p.via).split(' · ')[0] : ''), p.business ? 'Business' : 'Private', r ? [r.vendor, r.invoice_no].filter(Boolean).join(' · ') : p.noReceipt ? p.noReceiptWhy || '' : rcHunt(p)].filter(Boolean).join(' · ');
   return `<li class="ev clickable rc-${st}" data-act="rcpt" data-id="${esc(p.id)}" tabindex="0"><span class="ev-ico">${px(st === 'ok' ? 'check' : 'receipt')}</span><span class="ev-main"><b>${esc(p.payee || 'Payment')}</b><small>${rcTag(st)} ${esc(meta)}</small></span><span class="ev-amt">${rcMoney(p.amount_cents, p.currency)}</span><span class="nobtn"></span></li>`;
 }
 function rcLooseRow(r, plain) {
@@ -2463,7 +2463,7 @@ function openRcpt(id) {
   openSheet(sheetHead(esc(p.payee || 'Payment')) + `<div class="form">
     <p class="hint"><b>${rcMoney(p.amount_cents, p.currency)}</b> · ${fmtD(p.date)} · ${esc(p.accountName)}${p.via ? `<br><small>Paid with PayPal, taken from ${esc(p.via)}</small>` : ''}</p>
     <div class="seg" role="group" aria-label="For your taxes"><button type="button" data-act="rcbiz" data-tx="${esc(p.id)}" data-v="1" aria-pressed="${!!p.business}">Business</button><button type="button" data-act="rcbiz" data-tx="${esc(p.id)}" data-v="0" aria-pressed="${!p.business}">Private</button></div>
-    ${has || `<p class="muted">${p.noReceipt ? 'Marked as needing no receipt.' : 'No receipt yet.'}</p>${rcHunt(p, true) ? `<p class="small muted" style="margin:0">${esc(rcHunt(p, true))}</p>` : ''}`}
+    ${has || `<p class="muted">${p.noReceipt ? (p.noReceiptWhy ? `Needs no receipt: ${esc(p.noReceiptWhy)}. Set automatically; untick below if this one does need one.` : 'Marked as needing no receipt.') : 'No receipt yet.'}</p>${rcHunt(p, true) ? `<p class="small muted" style="margin:0">${esc(rcHunt(p, true))}</p>` : ''}`}
     <div id="rc-view" class="stack"></div>
     <div class="formrow"><label class="btn ${p.receipts.length ? '' : 'gold'}" for="rc-file">${px('plus')} Add a photo or PDF</label></div>
     <input type="file" id="rc-file" class="vh" accept="image/*,application/pdf" data-tx="${esc(p.id)}">

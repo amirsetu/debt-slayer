@@ -153,3 +153,14 @@ test('a missing receipt says what the Gmail search found; PayPal payments name t
   assert.match(html, /Card statements and payment plans<\/b> <span class="muted">\(1\)/);
   assert.ok(!/data-act="rcloose" data-id="gm:s1"/.test(html), 'a statement is not offered as a receipt to attach');
 });
+
+test('a payment marked automatically as needing no receipt says why', async () => {
+  const a = await app();
+  const list = JSON.parse(JSON.stringify(LIST));
+  list.payments.push(pay('tx-fa', '2026-11-03', 100000, 'Finanzamt Charlottenburg', false, [], { noReceipt: true, noReceiptWhy: 'tax office' }));
+  a.receipts.set('2026-11', list);
+  a.receipts.mode('rc', 'private');
+  const html = a.receipts.log();
+  assert.match(html, /Finanzamt Charlottenburg[\s\S]*?Not needed[\s\S]*?tax office/);
+  assert.match(html, /Missing<\/span><b class="bad">1<\/b>/, 'only LIDL is missing; the tax office is not');
+});
