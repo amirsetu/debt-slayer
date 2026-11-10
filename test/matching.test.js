@@ -156,3 +156,15 @@ test('a bank that keeps failing, or a sync service that is down, shows a warning
   app.setLiveErr('the sync service answered 500');
   assert.match(app.liveAlert(), /can't be reached: the sync service answered 500/);
 });
+
+test('a Sparkasse account from Enable Banking lands on your Sparkasse account', async () => {
+  const s = settings({ live: { url: 'https://sync.test', since: '2026-11-08' } });
+  const app = await load({ today: TODAY, board: board({ settings: s, items: ITEMS }) });
+  const acct = { id: 'eb:07cc67f4-45d6', provider: 'eb', name: 'Sparkasse KölnBonn · Girokonto …3000', currency: 'EUR', balance_cents: 123456 };
+  await app.applyFeed([acct], [], 5, { eb: { ok: true, label: 'Sparkasse KölnBonn' } }, []);
+  await app.tick();
+  const { S } = app.state();
+  assert.equal(S.live.map['eb:07cc67f4-45d6'], 'spk');
+  assert.equal(S.balances.spk, 1234.56);
+  assert.equal(S.acctSync.spk.live, true);
+});

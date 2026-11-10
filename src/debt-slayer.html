@@ -1059,7 +1059,7 @@ function afterRender() {
   if (cloudGate) return;
   if (PR.lvl > Math.max(+S.seenLvl || 1, lvlShown)) { if ($('#sheet').hidden) openLevelUp(); else pendingLvl = true; }
   if (!fxTried) { fxTried = true; refreshFx(false); }
-  if (!pushChecked) { pushChecked = true; pushRefresh(); }
+  if (!pushChecked) { pushChecked = true; pushRefresh(); ebReturned(); }
   hello();
   planLater();
   if (!liveTried && liveOn()) { liveTried = true; liveSync(Date.now() - (S.live.lastAt || 0) > 3 * 60000).then(r => liveToast(r, true)); }
@@ -1957,7 +1957,7 @@ function liveAlert() {
   const bad = Object.entries(L.status || {}).filter(([, s]) => s && s.ok === false && (s.fails == null || s.fails >= 2));
   const gone = liveErr && Date.now() - (L.lastAt || 0) > 30 * 60000;
   if (!bad.length && !gone) return '';
-  const lines = bad.map(([k, s]) => `<b>${esc(names[k] || k)}</b> hasn't synced${s.lastOk ? ' since ' + esc(whenIso(s.lastOk)) : ''}: ${esc(String(s.error || 'unknown error').slice(0, 140))}`);
+  const lines = bad.map(([k, s]) => `<b>${esc(s.label || names[k] || k)}</b> hasn't synced${s.lastOk ? ' since ' + esc(whenIso(s.lastOk)) : ''}: ${esc(String(s.error || 'unknown error').slice(0, 140))}`);
   if (gone) lines.unshift(`<b>Your sync service</b> can't be reached: ${esc(liveErr)}. Last update ${esc(liveAgo())}.`);
   return `<div class="alertbox" role="alert"><span>${lines.join('<br>')}<br><small class="muted">Until it works again, balances and bills from ${lines.length > 1 ? 'these' : 'there'} can be out of date.</small></span><button class="btn sm" data-act="settings">Check</button></div>`;
 }
@@ -1982,7 +1982,8 @@ function liveSettings() {
       <p class="err" id="lv-err" hidden></p>
       <div class="formrow"><button class="btn gold">${on ? 'Save' : 'Connect'}</button>${on ? `<button type="button" class="btn" data-act="livesync">Sync now</button>` : ''}</div>
       ${on ? `<div><button type="button" class="btn ghost danger" data-act="liveoff">Disconnect this device</button></div>` : ''}
-    </form>`;
+    </form>
+    ${on ? ebBlock() : ''}`;
 }
 
 /* ----- cloud backup -----
@@ -2309,6 +2310,52 @@ function pushSettings() {
       <div class="formrow"><button type="button" class="btn gold" data-act="pushon">${c ? 'Save' : 'Turn on notifications'}</button>${c ? '<button type="button" class="btn" data-act="pushtest">Send a test</button>' : ''}</div>
       ${c ? '<div><button type="button" class="btn ghost danger" data-act="pushoff">Turn off on this device</button></div>' : ''}
     </form>`;
+}
+
+/* ----- Sparkasse and other German banks, through Enable Banking on your sync service ----- */
+let EB = {at: 0, data: null, busy: false}, EBBANKS = null;
+const EB_PENDING = 'debtslayer.ebPending';
+function loadEb(force) {
+  if (!liveOn() || EB.busy || (!force && Date.now() - EB.at < 5 * 60000)) return;
+  EB.busy = true;
+  cloudFetch('/v1/eb/status').then(r => { EB = {at: Date.now(), data: r.status === 200 ? r.body : {configured: false, sessions: []}, busy: false}; })
+    .catch(() => { EB = {at: Date.now(), data: null, busy: false}; })
+    .finally(() => { const box = $('#eb-box'); if (box) box.outerHTML = ebBlock(); });
+}
+function ebBlock() {
+  if (!liveOn()) return '';
+  loadEb(false);
+  const d = EB.data;
+  if (!d) return `<p class="hint" id="eb-box">Checking your sync service for Sparkasse…</p>`;
+  if (!d.configured) return `<p class="hint" id="eb-box"><b>Sparkasse and other German banks</b><br>Not set up on your sync service yet. It needs a free Enable Banking app; the steps are under "Sparkasse" in the debt-slayer-sync README.</p>`;
+  return `<div class="stack" id="eb-box"><b>Sparkasse and other German banks</b>
+    ${d.sessions.map(s => `<div class="recur"><div><b>${esc(s.bank)}</b><small class="muted">${esc(s.accounts.join(', '))} · readable until ${fmtD(String(s.validUntil).slice(0, 10))}</small></div>
+      <div class="formrow"><button type="button" class="btn sm" data-act="ebpick" data-q="${esc(s.bank)}">Reconnect</button><button type="button" class="btn sm ghost danger" data-act="ebdrop" data-bank="${esc(s.bank)}">Disconnect</button></div></div>`).join('')}
+    <div><button type="button" class="btn sm gold" data-act="ebpick">${px('plus')} Connect ${d.sessions.length ? 'another bank' : 'your Sparkasse'}</button></div>
+    <p class="small muted">You log in on your bank's own page with S-pushTAN. Your sync service gets read-only access for up to 180 days and never sees your PIN. Credit cards aren't included.</p></div>`;
+}
+async function openEbPicker(q) {
+  openSheet(sheetHead('Connect your bank') + `<div class="form">
+    <label class="fld" for="eb-q"><span>Your bank</span><input type="search" id="eb-q" value="${esc(q || 'Sparkasse')}" placeholder="Sparkasse KölnBonn, Berliner Sparkasse…" autocomplete="off" enterkeyhint="search"></label>
+    <div id="eb-list" class="stack"><p class="muted">Loading the list of banks…</p></div>
+    <p class="small muted">There are hundreds of Sparkassen: pick yours by its full name, as on your bank card. Next comes your bank's own login page.</p></div>`);
+  try {
+    if (!EBBANKS) { const r = await cloudFetch('/v1/eb/banks?country=DE'); if (r.status !== 200) throw fail$(r); EBBANKS = r.body.banks || []; }
+    ebList();
+  } catch (e) { const box = $('#eb-list'); if (box) box.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+function ebList() {
+  const box = $('#eb-list'), q = norm(($('#eb-q') || {}).value || '').trim(); if (!box || !EBBANKS) return;
+  const words = q.split(/\s+/).filter(Boolean), hits = EBBANKS.filter(b => words.every(w => norm(b.name).includes(w))).slice(0, 40);
+  box.innerHTML = hits.map(b => `<button type="button" class="btn wide" style="justify-content:flex-start;text-align:left" data-act="ebgo" data-name="${esc(b.name)}">${esc(b.name)}</button>`).join('')
+    || `<p class="muted">No bank with that name. Try part of it, like the city.</p>`;
+}
+/** back from the bank's login page: fetch what the first read found */
+function ebReturned() {
+  const at = +readJSON(EB_PENDING) || 0;
+  if (!at || Date.now() - at > 30 * 60000) return;
+  writeJSON(EB_PENDING, null);
+  setTimeout(() => { loadEb(true); refreshAll(); }, 2500);
 }
 
 /* ----- repeating charges -----
@@ -2760,6 +2807,19 @@ const ACTIONS = {
   livesync: b => { b.disabled = true; b.textContent = 'Syncing…'; liveSync(true).then(r => { closeSheet(); liveToast(r); }); },
   // a click, not a form submit: iPhone only shows the permission prompt straight from a tap
   pushon: b => { const f = b.closest('form'); FORMS.push(f, new FormData(f)); },
+  ebpick: b => openEbPicker(b.dataset.q),
+  ebgo: b => {
+    b.disabled = true; b.textContent = 'Opening your bank…';
+    cloudFetch('/v1/eb/connect', {method: 'POST', body: {name: b.dataset.name, country: 'DE'}}).then(r => {
+      if (r.status !== 200) throw fail$(r);
+      writeJSON(EB_PENDING, Date.now());
+      location.href = r.body.url; // your bank's login page; it sends you back here
+    }).catch(e => { b.disabled = false; b.textContent = b.dataset.name; toast(esc(e.message || String(e)), 'bad'); });
+  },
+  ebdrop: b => {
+    if (!b.dataset.armed) { b.dataset.armed = '1'; b.textContent = 'Tap again to disconnect'; return; }
+    cloudFetch('/v1/eb/disconnect', {method: 'POST', body: {bank: b.dataset.bank}}).then(() => { toast(`${esc(b.dataset.bank)} disconnected`); loadEb(true); }).catch(e => toast(esc(e.message), 'bad'));
+  },
   pushtest: b => {
     const c = pushConf(); if (!c) return;
     b.disabled = true; b.textContent = 'Sending…';
@@ -3097,6 +3157,7 @@ document.addEventListener('change', e => {
 });
 document.addEventListener('input', e => {
   if (e.target.id === 'q-search') { searchQ = e.target.value; $('#q-out').innerHTML = searchOut(searchQ); }
+  if (e.target.id === 'eb-q') ebList();
   if (e.target.id === 'sim-extra') { simExtra = +e.target.value; $('#sim-val').textContent = eur(simExtra, 0); $('#sim-usd').textContent = '≈ ' + usd(simExtra / rate()); $('#sim-out').innerHTML = simOut(); }
   if (e.target.closest('form[data-form="strike"]')) strikePreview();
   if (['i-owed', 'i-amt', 'i-next'].includes(e.target.id) && $('#i-owed-prev')) owedPreview();
@@ -3122,7 +3183,7 @@ function owedPreview() {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { if (cloudDirtyAt && cloudOn()) cloudUpload(false); return; }
   checkUpdate();
-  if (S) hello();
+  if (S) { hello(); ebReturned(); }
   if (cloudOn() && !cloudGate && Date.now() - cloudLastCheck > 60000) cloudGate = cloudCheck().finally(() => { cloudGate = null; });
   if (isoOf(new Date()) !== T) scheduleRender();
   if (liveOn() && Date.now() - (S.live.lastAt || 0) > 3 * 60000) liveSync(true).then(r => liveToast(r, true));
@@ -3212,7 +3273,7 @@ const API = {
   useLocalStore: () => { store = localStore(); attach(); return store; },
   compute, occ, rawOcc, project, monthStats, debtOf, bosses, simulate, progress, unlocks,
   matchName, matchWords, buildPlan, guessCat, guessSrc, applyFeed, num, exportAll, importAll, unmatchBill, bankId, dayLimit, dayOk, liveAlert, setLiveErr: e => { liveErr = e; },
-  refreshAll, untracked, nextOn, setupBoard, setSetup: v => { SETUP = v; }, addRecurring, setRecurring: items => { RECUR = {at: Date.now(), items, busy: false}; },
+  refreshAll, untracked, ebBlock, setEb: d => { EB = {at: Date.now(), data: d, busy: false}; }, nextOn, setupBoard, setSetup: v => { SETUP = v; }, addRecurring, setRecurring: items => { RECUR = {at: Date.now(), items, busy: false}; },
   cloud: {seal, unseal, newLockKey, keyForEnvelope, boardHash, upload: cloudUpload, check: cloudCheck, load: cloudLoad, conf: cloudConf, device,
     state: () => ({cloudErr, cloudPending, cloudDirtyAt, cloudTimer: !!cloudTimer}), store: () => store},
 };

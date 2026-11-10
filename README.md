@@ -16,6 +16,7 @@ It then opens full screen like a normal app and works offline.
 - Everything you enter is kept **on the device**, in the browser's storage. This repository contains no personal data.
 - **Cloud backup** (Settings, after connecting your sync service): the board is locked on the device with a passphrase you choose (PBKDF2 + AES-GCM), then kept by your own sync service. Nobody else can open it. Every device with the passphrase loads the newest board when it opens; if two devices both changed it, the app asks which one to keep. **Earlier backups** goes back a month.
 - **Notifications** (Settings, after connecting your sync service): money in and out on your connected accounts, bills due or not gone out, and banks that stop syncing. They're encrypted for each device. For bill reminders, the next two weeks of bills (name, amount, date) go to your sync service.
+- **Sparkasse** (Settings › Live bank sync, once your sync service has Enable Banking set up): pick your Sparkasse, log in on its page with S-pushTAN, and it syncs like the other banks.
 - **Pull down to refresh:** at the top of any screen, pull down and let go (or hold a moment) to sync with your banks and your other devices.
 - **Repeating charges** (Bills tab, with live sync): subscriptions and plans your bank shows coming back, offered as bills in one tap.
 - **First run:** "Set up a new board" walks through name and cushion, accounts and balances, pay, and common bills.
