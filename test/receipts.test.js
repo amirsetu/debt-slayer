@@ -138,3 +138,18 @@ test('settings: Gmail not set up, then set up with two inboxes and the account t
   assert.match(html, /data-gmacct="qonto:1"><option value="business" selected>/);
   assert.match(html, /data-gmacct="eb:spk"><option value="business" >Business<\/option><option value="private" selected>/);
 });
+
+test('a missing receipt says what the Gmail search found; PayPal payments name the bank; statements are kept apart', async () => {
+  const a = await app();
+  const list = JSON.parse(JSON.stringify(LIST));
+  list.payments[2].hunt = { term: 'facebk', tries: 1, found: 0, at: '2026-11-08T10:00:00Z' };
+  list.payments.push(pay('pp-ads', '2026-11-05', 2200, 'Meta Platforms', true, [], { account: 'paypal:EUR', accountName: 'PayPal · EUR', via: 'Sparkasse Mittelthüringen · Girokonto …3000' }));
+  list.statements = [rec('gm:s1', 'Advanzia Bank S.A.', 604808, { id: 'gm:s1:e', name: 'email.html', type: 'text/html' }, { status: 'statement', subject: 'Gebührenfrei Mastercard Gold - Rechnung' })];
+  a.receipts.set('2026-11', list);
+  a.receipts.mode('rc', 'business');
+  const html = a.receipts.log();
+  assert.match(html, /=FACEBK \*ADS[\s\S]*?no email from “facebk”/);
+  assert.match(html, /PayPal via Sparkasse/);
+  assert.match(html, /Card statements and payment plans<\/b> <span class="muted">\(1\)/);
+  assert.ok(!/data-act="rcloose" data-id="gm:s1"/.test(html), 'a statement is not offered as a receipt to attach');
+});

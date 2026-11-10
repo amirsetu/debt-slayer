@@ -136,6 +136,7 @@ main{padding-block:16px calc(110px + env(safe-area-inset-bottom,0px))}
 .vh{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 .rc-doc{display:block;width:100%;max-height:70vh;border:2px solid var(--edge);border-radius:14px;background:#fff}
 iframe.rc-doc{height:60vh}
+.rc-stm summary{cursor:pointer;padding:8px 0;font-size:15px}
 
 /* bars */
 .hp{height:16px;border:2px solid var(--edge);border-radius:999px;background:var(--panel-2);overflow:hidden;position:relative}
@@ -2389,14 +2390,22 @@ const rcMoney = (cents, cur) => cur === 'USD' ? usd(cents / 100, 2) : !cur || cu
 const rcEur = list => sum(list.map(p => (p.currency === 'USD' ? p.amount_cents * (+S.fx || 0.86) : p.amount_cents) / 100));
 const rcTag = st => st === 'ok' ? `<span class="tag ok">Receipt</span>` : st === 'no' ? '<span class="tag">Not needed</span>' : '<span class="tag miss">Missing</span>';
 const rcLoose = d => ((d && d.unmatched) || []).filter(r => r.status !== 'not-invoice');
+/** what the search for this payment's receipt found, in a few words */
+const rcHunt = (p, long) => {
+  const h = p.hunt;
+  if (!h || p.receipts.length || p.noReceipt) return '';
+  if (!long) return h.found ? '' : `no email from “${h.term}”`;
+  return h.found ? `Gmail was searched for “${h.term}” around this date: ${h.found} email${h.found > 1 ? 's' : ''} from them, none with this amount. Attach one below, or add a photo or PDF.`
+    : `Gmail was searched for “${h.term}” around this date: no email from them in your inboxes. If their receipts go to another address, connect that inbox in Settings; otherwise download it from their website and add it here.`;
+};
 function rcRow(p) {
   const st = rcState(p), r = p.receipts[0];
-  const meta = [String(p.accountName || '').split(' · ')[0], p.business ? 'Business' : 'Private', r ? [r.vendor, r.invoice_no].filter(Boolean).join(' · ') : ''].filter(Boolean).join(' · ');
+  const meta = [String(p.accountName || '').split(' · ')[0] + (p.via ? ' via ' + String(p.via).split(' · ')[0] : ''), p.business ? 'Business' : 'Private', r ? [r.vendor, r.invoice_no].filter(Boolean).join(' · ') : rcHunt(p)].filter(Boolean).join(' · ');
   return `<li class="ev clickable rc-${st}" data-act="rcpt" data-id="${esc(p.id)}" tabindex="0"><span class="ev-ico">${px(st === 'ok' ? 'check' : 'receipt')}</span><span class="ev-main"><b>${esc(p.payee || 'Payment')}</b><small>${rcTag(st)} ${esc(meta)}</small></span><span class="ev-amt">${rcMoney(p.amount_cents, p.currency)}</span><span class="nobtn"></span></li>`;
 }
-function rcLooseRow(r) {
+function rcLooseRow(r, plain) {
   const meta = [r.invoice_date ? fmtD(r.invoice_date) : '', r.subject || '', r.amount_cents == null ? "amount not read" : ''].filter(Boolean).join(' · ');
-  return `<li class="ev clickable" data-act="rcloose" data-id="${esc(r.id)}" tabindex="0"><span class="ev-ico">${px('receipt')}</span><span class="ev-main"><b>${esc(r.vendor || r.sender || 'Receipt')}</b><small>${esc(meta)}</small></span><span class="ev-amt">${r.amount_cents != null ? rcMoney(r.amount_cents, r.currency) : '—'}</span><span class="nobtn"></span></li>`;
+  return `<li class="ev ${plain ? '' : 'clickable'}" ${plain ? '' : `data-act="rcloose" data-id="${esc(r.id)}" tabindex="0"`}><span class="ev-ico">${px('receipt')}</span><span class="ev-main"><b>${esc(r.vendor || r.sender || 'Receipt')}</b><small>${esc(meta)}</small></span><span class="ev-amt">${r.amount_cents != null ? rcMoney(r.amount_cents, r.currency) : '—'}</span><span class="nobtn"></span></li>`;
 }
 const rcAgo = iso => { const m = Math.round((Date.now() - Date.parse(iso)) / 60000); return !(m >= 0) ? '' : m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : rel(iso.slice(0, 10)); };
 const logSeg = () => `<div class="seg" role="group" aria-label="Show"><button type="button" data-act="logmode" data-m="all" aria-pressed="${logMode !== 'rc'}">Everything</button><button type="button" data-act="logmode" data-m="rc" aria-pressed="${logMode === 'rc'}">${px('receipt')} Receipts</button></div>`;
@@ -2435,6 +2444,7 @@ function vReceipts(m) {
       <section class="sec"><div class="sec-h"><h2>Payments</h2></div><p class="small muted">Tap a payment to see its receipt, add a photo, or mark it as needing none. Moving money between your own accounts isn't listed.</p>
         ${early ? '<p class="muted">Receipts start in October 2026.</p>' : html || `<p class="muted">No ${rcFilter === 'all' ? '' : rcFilter + ' '}payments in ${MONTHS[mo - 1]}.</p>`}</section>
       ${loose.length ? `<section class="sec"><div class="sec-h"><h2>Receipts without a payment</h2></div><p class="small muted">Found in Gmail, but no bank payment matched. Paid by a card that isn't connected, or the amount was different. Tap one to attach it.</p><ul class="evlist">${loose.map(rcLooseRow).join('')}</ul></section>` : ''}
+      ${(d.statements || []).length ? `<details class="sec rc-stm"><summary><b>Card statements and payment plans</b> <span class="muted">(${d.statements.length})</span></summary><p class="small muted">Kept apart: they cover many payments, not one. They stay in Gmail and aren't in the export.</p><ul class="evlist">${d.statements.map(r => rcLooseRow(r, true)).join('')}</ul></details>` : ''}
     </div></div>`;
 }
 
@@ -2451,9 +2461,9 @@ function openRcpt(id) {
     <div class="formrow">${rcFileBtns(r)}<button type="button" class="btn sm ghost" data-act="rcunlink" data-id="${esc(r.id)}" data-tx="${esc(p.id)}">Not this one</button></div></div>`).join('');
   const cands = rcLoose(RC.data).map(r => ({r, off: r.amount_cents == null ? 1e12 : Math.abs(r.amount_cents - p.amount_cents)})).sort((a, b) => a.off - b.off).slice(0, 6);
   openSheet(sheetHead(esc(p.payee || 'Payment')) + `<div class="form">
-    <p class="hint"><b>${rcMoney(p.amount_cents, p.currency)}</b> · ${fmtD(p.date)} · ${esc(p.accountName)}</p>
+    <p class="hint"><b>${rcMoney(p.amount_cents, p.currency)}</b> · ${fmtD(p.date)} · ${esc(p.accountName)}${p.via ? `<br><small>Paid with PayPal, taken from ${esc(p.via)}</small>` : ''}</p>
     <div class="seg" role="group" aria-label="For your taxes"><button type="button" data-act="rcbiz" data-tx="${esc(p.id)}" data-v="1" aria-pressed="${!!p.business}">Business</button><button type="button" data-act="rcbiz" data-tx="${esc(p.id)}" data-v="0" aria-pressed="${!p.business}">Private</button></div>
-    ${has || `<p class="muted">${p.noReceipt ? 'Marked as needing no receipt.' : 'No receipt yet.'}</p>`}
+    ${has || `<p class="muted">${p.noReceipt ? 'Marked as needing no receipt.' : 'No receipt yet.'}</p>${rcHunt(p, true) ? `<p class="small muted" style="margin:0">${esc(rcHunt(p, true))}</p>` : ''}`}
     <div id="rc-view" class="stack"></div>
     <div class="formrow"><label class="btn ${p.receipts.length ? '' : 'gold'}" for="rc-file">${px('plus')} Add a photo or PDF</label></div>
     <input type="file" id="rc-file" class="vh" accept="image/*,application/pdf" data-tx="${esc(p.id)}">
