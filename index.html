@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="ds-version" content="ds-ab375229a5">
+<meta name="ds-version" content="ds-8a86e82ae8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="description" content="Debt Slayer: a game-style money planner. Daily spending limit, bills, and a debt payoff plan.">
 <meta name="theme-color" content="#F3EEFF" media="(prefers-color-scheme: light)">
@@ -155,6 +155,7 @@ main{padding-block:16px calc(110px + env(safe-area-inset-bottom,0px))}
 .rc-doc{display:block;width:100%;max-height:70vh;border:2px solid var(--edge);border-radius:14px;background:#fff}
 iframe.rc-doc{height:60vh}
 .rc-stm summary{cursor:pointer;padding:8px 0;font-size:15px}
+#today{scroll-margin-top:84px}
 
 /* bars */
 .hp{height:16px;border:2px solid var(--edge);border-radius:999px;background:var(--panel-2);overflow:hidden;position:relative}
@@ -1202,7 +1203,7 @@ function chartBlock(days, title) {
 function vHQ() {
   const needSync = !(S.syncs || []).length;
   const nudge = store.kind === 'local' && !cloudOn() && backupDue() && ITEMS.length ? `<div class="nudge"><span>${lastBackup() ? `Last backup ${esc(rel(lastBackup()))}.` : 'No backup yet.'} This phone is the only copy of your board.</span><button class="btn sm" data-act="savebackup">Save backup</button></div>` : '';
-  return `<div class="hq"><div class="col">${liveAlert()}${nudge}${greet()}${bento(needSync)}${needSync ? startCard() : ''}${waitingBlock()}${inboxBlock()}${comingUp()}</div>
+  return `<div class="hq"><div class="col">${liveAlert()}${nudge}${greet()}${bento(needSync)}${needSync ? startCard() : ''}${todayBlock()}${waitingBlock()}${inboxBlock()}${comingUp()}</div>
     <div class="col">${questsBlock()}${sideQuest()}${chartBlock(M.proj.slice(0, M.H + 1), 'Next ' + Math.round(M.H / 7) + ' weeks')}</div></div>`;
 }
 function greet() {
@@ -1240,7 +1241,7 @@ function bento(needSync) {
       <div class="row between"><span class="lbl">${m === 'short' ? 'Survival limit left today' : 'You can spend today'}</span>${pill}</div>
       <div class="big">${over ? '−' + eur(-M.left, 0).replace('−', '') : eur(M.left, 0)}</div>
       <div class="hp ${over ? 'hit' : ''}"><i style="width:${pct.toFixed(1)}%"></i></div>
-      <div class="hp-meta"><span>Spent ${eur(M.spentToday)}</span><span>${m === 'short' ? 'Survival limit' : 'Limit'} ${eur(M.target)}</span></div>
+      <div class="hp-meta">${M.spentToday > 0 ? `<a href="#today" data-act="totoday" style="color:inherit">Spent ${eur(M.spentToday)} ›</a>` : `<span>Spent ${eur(M.spentToday)}</span>`}<span>${m === 'short' ? 'Survival limit' : 'Limit'} ${eur(M.target)}</span></div>
       <p class="explain">${over ? `<b>You're over today's limit.</b> Tomorrow's limit shrinks to make up for it. ` : ''}${ex}</p>
       <div class="row" style="margin-top:4px"><button class="btn lime" data-act="log" data-tab="spend">${px('plus')} Log a spend</button>${nsToday ? `<button class="btn" data-act="nospend" aria-label="No-spend day locked in. Undo">${px('check')} No-spend · Undo</button>` : `<button class="btn" data-act="nospend" ${M.spentToday > 0 ? 'disabled' : ''}>No-spend day</button>`}</div>
     </section>
@@ -1275,6 +1276,22 @@ function inboxBlock() {
     <p class="small muted">Tick each one for +10 XP. If one didn't happen, tap it to skip it or change the amount.</p>
     <ul class="evlist">${list.map(o => evRow(o, {date: true})).join('')}</ul>
     ${M.inbox.length > list.length ? `<div><button class="btn ghost" data-act="inboxall">Show ${M.inbox.length - list.length} more</button></div>` : ''}</section>`;
+}
+/** what actually happened on a day: payments and money in, from the bank or logged by you, plus bills the bank ticked that day */
+function dayHappened(d) {
+  const tx = TXNS.filter(t => t.date === d).sort((a, b) => (b.at || 0) - (a.at || 0));
+  const via = MARKS.via || {}, bills = occ(addD(d, -6), addD(d, 6)).filter(o => o.done && via[o.key] && via[o.key].date === d);
+  const out = sum(tx.filter(t => t.kind === 'exp' || t.kind === 'pay').map(t => +t.eur || 0)) + sum(bills.filter(o => o.v < 0).map(o => -(via[o.key].eur || -o.v)));
+  const inc = sum(tx.filter(t => t.kind === 'inc').map(t => +t.eur || 0)) + sum(bills.filter(o => o.v > 0).map(o => via[o.key].eur || o.v));
+  return {tx, bills, out, inc, n: tx.length + bills.length};
+}
+/** Home: today so far, so a payment you got a notification for is right here */
+function todayBlock() {
+  const h = dayHappened(T);
+  if (!h.n) return liveOn() ? `<section class="sec"><div class="sec-h"><h2>Today so far</h2></div><p class="small muted">Nothing has left your accounts today.</p></section>` : '';
+  const sumLine = [h.out ? `−${eur(h.out)} out` : '', h.inc ? `+${eur(h.inc)} in` : ''].filter(Boolean).join(' · ');
+  return `<section class="sec" id="today"><div class="sec-h"><h2>Today so far</h2><span class="small muted">${sumLine}</span></div>
+    <ul class="evlist">${h.tx.map(t => txnRow(t)).join('')}${h.bills.map(o => evRow(o)).join('')}</ul></section>`;
 }
 function comingUp() {
   const end = addD(T, 9);
@@ -1745,15 +1762,19 @@ function openSync() {
     <button class="btn gold wide">Save balances · +25 XP</button></form>`);
 }
 
-function openDay(d) {
-  const os = occ(d, d, true), tx = TXNS.filter(t => t.date === d);
+function openDay(d) { openSheet(dayHtml(d)); }
+function dayHtml(d) {
+  const os = occ(d, d, true), tx = TXNS.filter(t => t.date === d).sort((a, b) => (b.at || 0) - (a.at || 0));
   const bal = d >= T ? ((M.proj.find(p => p.date === d) || {}).bal ?? project(M.now, d).days.slice(-1)[0].bal) : null;
   const rows = os.map(o => evRow(o, {note: true, back: d})).join('');
-  openSheet(sheetHead(fmtD(d)) + `<div class="stack">
+  const out = sum(tx.filter(t => t.kind === 'exp' || t.kind === 'pay').map(t => +t.eur || 0)), inc = sum(tx.filter(t => t.kind === 'inc').map(t => +t.eur || 0));
+  const happened = d <= T && tx.length ? `<h2 style="margin-top:6px">${d === T ? 'Today so far' : 'What happened'}</h2><p class="small muted" style="margin:0">${[out ? `−${eur(out)} out` : '', inc ? `+${eur(inc)} in` : ''].filter(Boolean).join(' · ')}</p><ul class="evlist">${tx.map(t => txnRow(t)).join('')}</ul>` : '';
+  return sheetHead(fmtD(d)) + `<div class="stack">
     ${bal != null ? `<p class="hint">Balance that night, bills only: <b>${eur(bal, 0)}</b></p>` : ''}
-    ${os.length ? `<p class="small muted">Tap a payment to change its amount or date, or to skip it.</p><ul class="evlist">${rows}</ul>` : '<p class="muted">No bills or income scheduled.</p>'}
-    ${tx.length ? `<h2 style="margin-top:6px">Logged</h2><ul class="evlist">${tx.map(t => txnRow(t)).join('')}</ul>` : ''}
-    <div class="formrow"><button class="btn" data-act="log" data-tab="${d > T ? 'plan' : 'spend'}" data-date="${d}">${px('plus')} ${d > T ? 'Add a one-off bill' : 'Log spending'}</button></div></div>`);
+    ${d <= T ? happened : ''}
+    ${os.length ? `${d <= T && tx.length ? '<h2 style="margin-top:6px">Bills and income</h2>' : ''}<p class="small muted">Tap a payment to change its amount or date, or to skip it.</p><ul class="evlist">${rows}</ul>` : d <= T && tx.length ? '' : '<p class="muted">No bills or income scheduled.</p>'}
+    ${d > T && tx.length ? `<h2 style="margin-top:6px">Planned</h2><ul class="evlist">${tx.map(t => txnRow(t)).join('')}</ul>` : ''}
+    <div class="formrow"><button class="btn" data-act="log" data-tab="${d > T ? 'plan' : 'spend'}" data-date="${d}">${px('plus')} ${d > T ? 'Add a one-off bill' : 'Log spending'}</button></div></div>`;
 }
 
 function nextInfo(it) {
@@ -3124,6 +3145,7 @@ const ACTIONS = {
   sync: () => openSync(),
   settings: () => openSettings(),
   day: b => openDay(b.dataset.date),
+  totoday: (b, e) => { if (e) e.preventDefault(); const el = document.getElementById('today'); if (el) el.scrollIntoView({behavior: 'smooth', block: 'start'}); },
   item: b => openItem(b.dataset.id),
   newitem: b => openItem(null, {income: b.dataset.income === '1'}),
   txn: b => openTxn(b.dataset.id),
@@ -3666,6 +3688,8 @@ const API = {
   compute, occ, rawOcc, project, monthStats, debtOf, bosses, simulate, progress, unlocks,
   matchName, matchWords, buildPlan, guessCat, guessSrc, applyFeed, num, exportAll, importAll, unmatchBill, bankId, dayLimit, dayOk, liveAlert, setLiveErr: e => { liveErr = e; },
   refreshAll, untracked, ebBlock,
+  view: v => { M = compute(); PR = progress(); return v === 'map' ? vMap() : v === 'bosses' ? vBosses() : v === 'bills' ? vBills() : v === 'log' ? vLog() : vHQ(); },
+  dayHtml: d => { M = compute(); PR = progress(); return dayHtml(d); },
   receipts: {crc32, zipStore, exportZip: rcExport, span: rcSpan, view: vReceipts, gmBlock, csvCell, load: loadReceipts, rcState,
     set: (m, d) => { RC = {key: m + '-01|' + monthEnd(m + '-01'), at: Date.now(), data: d, busy: null, err: ''}; }, setGm: d => { GM = {at: Date.now(), data: d, busy: false}; },
     mode: (m, f) => { logMode = m; if (f) rcFilter = f; }, log: vLog}, setEb: d => { EB = {at: Date.now(), data: d, busy: false}; }, nextOn, setupBoard, setSetup: v => { SETUP = v; }, addRecurring, setRecurring: items => { RECUR = {at: Date.now(), items, busy: false}; },
